@@ -1,9 +1,6 @@
-# Set workspace to current directory (works even if Vitis GUI is already open on it)
+# Delete old workspace if rebuilding from scratch
+file delete -force ./sw/workspace
 setws ./sw/workspace
-
-# Remove existing projects inside the workspace instead of deleting the locked .metadata folder
-catch {app remove synth_app}
-catch {platform remove urbana_platform}
 
 # 1. Create the Hardware Platform & Standalone MicroBlaze BSP from the .xsa
 platform create -name urbana_platform -hw ./export/mb_usb_hdmi_top.xsa -proc microblaze_0 -os standalone
