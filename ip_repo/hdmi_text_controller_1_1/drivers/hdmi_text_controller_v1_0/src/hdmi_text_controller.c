@@ -56,11 +56,11 @@ void setColorPalette (uint8_t color, uint8_t red, uint8_t green, uint8_t blue)
 {
 	//fill in this function to set the color palette entry <color> to <red>, <green>, <blue> 12-bit color
 	if (color % 2) {
-		hdmi_ctrl->PALETTE[color/2] &= 0xFF00;
+		hdmi_ctrl->PALETTE[color/2] &= 0xFFFF0000;
 		hdmi_ctrl->PALETTE[color/2] |= red << 8 | green << 4 | blue;
 	}
 	else {
-		hdmi_ctrl->PALETTE[color/2] &= 0x00FF;
+		hdmi_ctrl->PALETTE[color/2] &= 0x0000FFFF;
 		hdmi_ctrl->PALETTE[color/2] |= red << 24 | green << 20 | blue << 16;
 	}
 

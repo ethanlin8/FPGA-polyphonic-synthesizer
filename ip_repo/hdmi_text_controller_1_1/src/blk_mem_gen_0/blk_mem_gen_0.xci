@@ -5,7 +5,7 @@
     "cell_name": "hdmi_text_controller_v2_0_AXI_inst/bram",
     "component_reference": "xilinx.com:ip:blk_mem_gen:8.4",
     "ip_revision": "5",
-    "gen_directory": "../../../../../../../users/rlin1/ece385_labs/lab7_2_new/lab7_2_new.tmp/hdmi_text_controller_v2_0_project/hdmi_text_controller_v2_0_project.gen/sources_1/ip/blk_mem_gen_0",
+    "gen_directory": "../../../../../../../users/rlin1/fpga-polyphonic-synthesizer/build/fpga-polyphonic-synthesizer/fpga-polyphonic-synthesizer.tmp/hdmi_text_controller_v2_0_project/hdmi_text_controller_v2_0_project.gen/sources_1/ip/blk_mem_gen_0",
     "parameters": {
       "component_parameters": {
         "Component_Name": [ { "value": "blk_mem_gen_0", "resolve_type": "user", "usage": "all" } ],
@@ -177,7 +177,7 @@
         "IPCONTEXT": [ { "value": "IP_Flow" } ],
         "IPREVISION": [ { "value": "5" } ],
         "MANAGED": [ { "value": "TRUE" } ],
-        "OUTPUTDIR": [ { "value": "../../../../../../../users/rlin1/ece385_labs/lab7_2_new/lab7_2_new.tmp/hdmi_text_controller_v2_0_project/hdmi_text_controller_v2_0_project.gen/sources_1/ip/blk_mem_gen_0" } ],
+        "OUTPUTDIR": [ { "value": "../../../../../../../users/rlin1/fpga-polyphonic-synthesizer/build/fpga-polyphonic-synthesizer/fpga-polyphonic-synthesizer.tmp/hdmi_text_controller_v2_0_project/hdmi_text_controller_v2_0_project.gen/sources_1/ip/blk_mem_gen_0" } ],
         "SELECTEDSIMMODEL": [ { "value": "" } ],
         "SHAREDDIR": [ { "value": "." } ],
         "SWVERSION": [ { "value": "2022.2" } ],
