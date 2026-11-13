@@ -16,6 +16,7 @@
 *.runs/
 *.sim/
 *.gen/
+build/
 
 # Ignore binary Block Design files inside *.srcs/ (recreated via scripts/mb_system.tcl)
 *.bd
