@@ -14,3 +14,6 @@ importsources -name synth_app -path ./sw/src -soft-link
 
 # 4. Build the .elf binary
 app build -name synth_app
+
+# 5. Launch Vitis GUI directly into the workspace
+exec vitis -workspace ./sw/workspace &
