@@ -1,0 +1,82 @@
+# ==============================================================================
+# 1. Vivado Build & Project Artifacts (Generated via hw/scripts/build_hw.tcl)
+# ==============================================================================
+hw/build/
+*.xpr
+*.jou
+*.log
+*.str
+*.dmp
+*.pb
+*.wdb
+*.wcfg
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+*.srcs/
+
+# Ignore binary Block Design files (track only TCL scripts in hw/bd/)
+*.bd
+*.bda
+*.bxml
+
+# Ignore generated bitstreams and checkpoints (unless explicitly needed)
+*.bit
+*.bin
+*.dcp
+*.ltx
+
+# ==============================================================================
+# 2. Vitis 2022.2 Workspace & Build Artifacts (Generated via sw/scripts/build_sw.tcl)
+# ==============================================================================
+sw/workspace/
+.metadata/
+.analytics/
+RemoteSystemsTempFiles/
+_ide/
+Debug/
+Release/
+*.elf
+*.o
+*.d
+*.a
+*.bif
+*.smi
+*.mmi
+
+# MicroBlaze BSP & Platform outputs
+*/microblaze_*/
+*/standalone_domain/
+*/export/
+
+# Note: Keep export/*.xsa tracked if you want to rebuild Vitis without running Vivado.
+# Uncomment the line below if you prefer not to commit .xsa files:
+export/*.xsa
+
+# ==============================================================================
+# 3. Operating System & Editor Files (macOS, Windows, VS Code)
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# VS Code / Vim / General
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
