@@ -42,6 +42,7 @@ ip_repo/**/tmp_edit_project*
 # ==============================================================================
 # 3. Vitis 2022.2 Workspace & Build Artifacts
 # ==============================================================================
+sw/workspace/
 .metadata/
 .analytics/
 RemoteSystemsTempFiles/
@@ -55,8 +56,6 @@ Release/
 *.bif
 *.smi
 *.mmi
-*/microblaze_*/
-*/standalone_domain/
 
 # ==============================================================================
 # 3. OS & Editor Files
