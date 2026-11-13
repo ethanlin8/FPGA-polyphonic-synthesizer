@@ -3,7 +3,7 @@ file delete -force ./sw/workspace
 setws ./sw/workspace
 
 # 1. Create the Hardware Platform & Standalone MicroBlaze BSP from the .xsa
-platform create -name urbana_platform -hw ./export/design_1_wrapper.xsa -proc microblaze_0 -os standalone
+platform create -name urbana_platform -hw ./export/mb_usb_hdmi_top.xsa -proc microblaze_0 -os standalone
 platform generate
 
 # 2. Create the Application Project
