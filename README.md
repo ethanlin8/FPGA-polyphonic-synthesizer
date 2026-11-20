@@ -16,12 +16,13 @@ FPGA-polyphonic-synthesizer/
 │   └── workspace/          # [IGNORED] Local Vitis workspace, BSPs, and .elf binaries
 ├── scripts/
 │   ├── recreate.tcl        # [TRACKED] Vivado project & Block Design blueprint (2022.2)
-│   ├── build_hw.tcl        # [TRACKED] Full hardware rebuild + bitstream + .xsa export
-│   ├── rebuild_hw.tcl      # [TRACKED] Fast incremental RTL synthesis + bitstream + .xsa export
+│   ├── build_hw.tcl        # [TRACKED] Full hardware rebuild + timing check + .xsa export
+│   ├── rebuild_hw.tcl      # [TRACKED] Fast incremental RTL build + timing check + .xsa export
 │   ├── build_sw.tcl        # [TRACKED] Full Vitis platform + application workspace build
 │   ├── rebuild_app.tcl     # [TRACKED] Fast incremental C build + board programming
-│   └── program_board.tcl   # [TRACKED] JTAG bitstream + MicroBlaze .elf flashing script
-└── build/                  # [IGNORED] Local Vivado .xpr project, synthesis, and bitstream outputs
+│   ├── program_board.tcl   # [TRACKED] JTAG bitstream + MicroBlaze .elf flashing script
+│   └── run.tcl             # [TRACKED] Full software rebuild + board programming (build_sw + program_board)
+└── build/                  # [IGNORED] Local Vivado project (build/<project_name>/*.xpr) & outputs
 ```
 
 ---
@@ -30,7 +31,7 @@ FPGA-polyphonic-synthesizer/
 
 1. **Never commit `build/` or `sw/workspace/`.** Both directories are generated locally via `scripts/`.
 2. **Never commit `.xpr` or `.bd` files.** Opening a project on UIUC EWS (Vivado 2023.1+) upgrades project metadata and breaks compatibility with Vivado 2022.2.
-3. **Only export `recreate.tcl`, `.xsa`, and custom IP packages from Vivado 2022.2** (Windows or ECEB lab workstations).
+3. **Only export `recreate.tcl`, `.xsa`, and custom IP packages from Vivado 2022.2** (Windows or ECEB lab workstations). Both `build_hw.tcl` and `rebuild_hw.tcl` include a `2022.2` version guard so running them on EWS automatically skips overwriting `export/*.xsa`.
 4. **Always edit human-written code inside `hw/`, `ip_repo/`, and `sw/src/`.** Never edit files inside `build/`.
 5. **Run all scripts from the repository root (`FPGA-polyphonic-synthesizer/`).**
 
@@ -39,17 +40,17 @@ FPGA-polyphonic-synthesizer/
 ## Hardware Workflow (Vivado 2022.2)
 
 ### 1. Hardware Automation Scripts
-* **Full Build from Scratch (`build_hw.tcl`):** Wipes `build/`, recreates the Vivado project from `scripts/recreate.tcl`, runs synthesis/implementation, checks setup/hold timing slack (`WNS`/`WHS`), and exports `export/*.xsa` (with bitstream included).
+* **Full Build from Scratch (`build_hw.tcl`):** Wipes `build/`, recreates the Vivado project inside `build/FPGA-polyphonic-synthesizer/` from `scripts/recreate.tcl`, generates Block Design output products, runs synthesis/implementation, checks setup/hold timing slack (`WNS`/`WHS`), and exports `export/*.xsa` (on `2022.2` only).
   ```bash
   vivado -mode batch -source scripts/build_hw.tcl
   ```
-* **Fast Incremental RTL Build (`rebuild_hw.tcl`):** Keeps `build/` and cached Block Design IPs intact, re-runs synthesis/bitstream generation after RTL edits in `hw/`, checks timing slack, and exports `export/*.xsa`.
+* **Fast Incremental RTL Build (`rebuild_hw.tcl`):** Opens the existing `.xpr` inside `build/*/*.xpr`, keeps cached Block Design IPs intact, re-runs synthesis/bitstream generation after RTL edits in `hw/`, checks timing slack, and exports `export/*.xsa` (on `2022.2` only).
   ```bash
   vivado -mode batch -source scripts/rebuild_hw.tcl
   ```
 
 ### 2. Opening the Project in the Vivado GUI
-* **If `build/*.xpr` already exists:** Double-click `build/FPGA-polyphonic-synthesizer.xpr`.
+* **If `build/` already exists:** Double-click `build/FPGA-polyphonic-synthesizer/FPGA-polyphonic-synthesizer.xpr`.
 * **If `build/` does not exist yet (Windows Vivado 2022.2 Tcl Shell):**
   ```tcl
   cd C:/path/to/FPGA-polyphonic-synthesizer
@@ -58,20 +59,19 @@ FPGA-polyphonic-synthesizer/
   source ../scripts/recreate.tcl
   start_gui
   ```
-* **Testing Synthesis/Simulation on UIUC EWS (SSH):**
+* **Testing Synthesis/Implementation on UIUC EWS (SSH):**
   ```bash
   cd ~/FPGA-polyphonic-synthesizer
-  rm -rf build && mkdir build && cd build
   module load xilinx/2023.1
-  vivado -mode batch -source ../scripts/recreate.tcl
+  vivado -mode batch -source scripts/build_hw.tcl
   ```
-  *(Note: Never run `write_project_tcl` or export `.xsa` from EWS 2023.1+.)*
+  *(Note: Never run `write_project_tcl` from EWS 2023.1+.)*
 
 ### 3. Saving Block Design or Project Changes (Vivado 2022.2 Only)
 Whenever you add/remove files in `hw/`, modify the Block Design, or repackage a custom IP in `ip_repo/`:
 1. When adding new files in Vivado, ensure they live in `hw/` first and **uncheck "Copy sources into project"**.
 2. Keep **Incremental Synthesis disabled** in Vivado Settings so `recreate.tcl` never references local `.dcp` checkpoints.
-3. In the Vivado Tcl Console (from inside `build/`), run:
+3. In the Vivado Tcl Console (navigate to `build/` via `cd ..` if currently inside `build/FPGA-polyphonic-synthesizer`), run:
    ```tcl
    write_project_tcl -force ../scripts/recreate.tcl
    ```
@@ -85,7 +85,11 @@ Whenever you add/remove files in `hw/`, modify the Block Design, or repackage a 
 > **Important:** Close any open Vitis GUI windows before running XSCT scripts so `.metadata/.lock` is not held.
 
 ### 1. Software Automation Scripts
-* **Full Platform & App Build (`build_sw.tcl`):** Wipes `sw/workspace/`, creates `urbana_platform` and `synth_app` from `export/*.xsa`, soft-links `sw/src/`, and compiles `synth_app.elf`. Run this after pulling a new `.xsa` or adding new `.c`/`.h` files:
+* **Full Build & Flash (`run.tcl`):** Runs `build_sw.tcl` followed immediately by `program_board.tcl`—rebuilding the platform/app from `export/*.xsa` and flashing the Urbana Board in one step:
+  ```bash
+  xsct scripts/run.tcl
+  ```
+* **Full Platform & App Build Only (`build_sw.tcl`):** Wipes `sw/workspace/`, creates `urbana_platform` and `synth_app` from `export/*.xsa`, soft-links `sw/src/`, and compiles `synth_app.elf` without flashing:
   ```bash
   xsct scripts/build_sw.tcl
   ```

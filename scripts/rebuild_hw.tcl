@@ -1,5 +1,5 @@
 # Safety check: Ensure we are at the repository root and build/*.xpr exists
-set xpr_list [glob -nocomplain ./build/*.xpr]
+set xpr_list [glob -nocomplain ./build/*/*.xpr]
 if {[llength $xpr_list] == 0} {
     error "ERROR: No .xpr found in ./build/. Run from the repo root (or run build_hw.tcl first)."
 }
