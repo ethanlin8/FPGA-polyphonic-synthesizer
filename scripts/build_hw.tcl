@@ -5,7 +5,15 @@ cd ./build
 
 source ../scripts/recreate.tcl
 
-# 2. Run Synthesis
+# 2. Ensure Block Design output products & IP checkpoints exist
+set bd_files [get_files -quiet *.bd]
+if {[llength $bd_files] > 0} {
+    puts "Generating Block Design output products..."
+    generate_target all $bd_files
+    export_ip_user_files -of_objects $bd_files -no_script -sync -force -quiet
+}
+
+# 3. Run Synthesis
 reset_run synth_1
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
@@ -14,7 +22,7 @@ if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
     error "ERROR: Synthesis failed! Check logs in build/."
 }
 
-# 3. Run Implementation and Bitstream Generation
+# 4. Run Implementation and Bitstream Generation
 launch_runs impl_1 -to_step write_bitstream -jobs 4
 wait_on_run impl_1
 
@@ -22,7 +30,7 @@ if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
     error "ERROR: Implementation or Bitstream generation failed!"
 }
 
-# 4. Check Setup (WNS) and Hold (WHS) timing slack
+# 5. Check Setup (WNS) and Hold (WHS) timing slack
 set wns [get_property STATS.WNS [get_runs impl_1]]
 set whs [get_property STATS.WHS [get_runs impl_1]]
 puts "=================================================="
@@ -33,9 +41,13 @@ if {$wns < 0.0 || $whs < 0.0} {
     puts "WARNING: Timing constraints were NOT met! (WNS=${wns} ns, WHS=${whs} ns)"
 }
 
-# 5. Export the .xsa hardware handoff (including bitstream) to ../export/
-file mkdir ../export
-set top_name [get_property top [current_fileset]]
-write_hw_platform -fixed -include_bit -force -file ../export/${top_name}.xsa
-
-puts "SUCCESS: Bitstream generated and exported to ../export/${top_name}.xsa"
+# 6. Export .xsa ONLY if running Vivado 2022.2 (prevents EWS 2023.1+ from overwriting it)
+set vivado_ver [version -short]
+if {$vivado_ver eq "2022.2"} {
+    file mkdir ../export
+    set top_name [get_property top [current_fileset]]
+    write_hw_platform -fixed -include_bit -force -file ../export/${top_name}.xsa
+    puts "SUCCESS (Vivado $vivado_ver): Exported hardware to ../export/${top_name}.xsa"
+} else {
+    puts "INFO: Running Vivado $vivado_ver (non-2022.2). Skipping ../export/*.xsa overwrite."
+}
