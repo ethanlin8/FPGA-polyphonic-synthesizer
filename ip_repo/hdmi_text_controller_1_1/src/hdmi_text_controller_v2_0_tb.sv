@@ -43,13 +43,14 @@ module hdmi_text_controller_tb();
     logic pixel_clk, pixel_hs, pixel_vs, pixel_vde;
     logic [9:0] drawX, drawY;
     logic [31:0] tb_read;
+    logic [31:0] expected_tuning [0:7];
     
     //BMP writer related signals    
     localparam BMP_WIDTH  = 800;
     localparam BMP_HEIGHT = 525;
     logic [23:0] bitmap [BMP_WIDTH][BMP_HEIGHT];
 
-    integer i, j;
+    integer i, j, reg_idx;
 
 	//Instantiation of DUT (HDMI TEXT_CONTROLLER) IP
 	hdmi_text_controller_v2_0 # (
@@ -204,57 +205,36 @@ module hdmi_text_controller_tb();
         end
     endtask
 
-    // Helper function to format a 16-bit character word: {inverse, ASCII[6:0], fgd[3:0], bkg[3:0]}
-    function logic [15:0] format_char(input byte ch, input int idx);
-        logic [3:0] fgd;
-        logic [3:0] bkg;
-        bkg = 4'h0; // Color 0: Black background (12'h000)
-
-        if ((idx >= 0 && idx <= 7) || (idx >= 13 && idx <= 20))
-            fgd = 4'h2; // Color 2: Blue (12'h36B) for "ryanlin5" and "ethanl12"
-        else if (idx >= 32 && idx <= 39)
-            fgd = 4'h3; // Color 3: Orange (12'hE94) for "ECE 385!"
-        else
-            fgd = 4'h1; // Color 1: White (12'hFFF) for " and " and " completed "
-
-        return {1'b0, ch[6:0], fgd, bkg};
-    endfunction
-  
     // Test vectors
-    string banner = "ryanlin5 and ethanl12 completed ECE 385!";
-    logic [15:0] char_lo, char_hi;
-
     initial begin: TEST_VECTORS
         arstn = 0;
         repeat (4) @(posedge aclk);
         arstn <= 1;
-        
-        // 1. Configure Palette Registers (Word offsets 0x800 and 0x801 -> byte addresses * 4)
-        // Palette Reg 0 (0x800): C1 = White (12'hFFF), C0 = Black (12'h000)
-        repeat (4) @(posedge aclk) axi_write(32'h800 * 4, {4'h0, 12'hFFF, 4'h0, 12'h000});
-        // Palette Reg 1 (0x801): C3 = Orange (12'hE94), C2 = Blue (12'h36B)
-        repeat (4) @(posedge aclk) axi_write(32'h801 * 4, {4'h0, 12'hE94, 4'h0, 12'h36B});
 
-        // 2. Clear all 1200 VRAM words to spaces (ASCII 0x20) with White fgd (1) and Black bkg (0)
-        for (i = 0; i < 1200; i++) begin
-            repeat (2) @(posedge aclk) axi_write(4 * i, {16'h2010, 16'h2010});
+        axi_write(32'h00, 32'h00000005);
+        axi_write(32'h04, 32'h00000001);
+        for (reg_idx = 0; reg_idx < 8; reg_idx++) begin
+            expected_tuning[reg_idx] = 32'h00000100 << reg_idx;
+            axi_write(32'h08 + (reg_idx * 4), expected_tuning[reg_idx]);
         end
+        axi_write(32'h28, 32'h000002A5);
 
-        // 3. Write the 40-character string (20 32-bit words) starting at VRAM word 0
-        // (To center on row 14 instead, change address to: 4 * (14 * 40 + 10 + i))
-        for (i = 0; i < 20; i++) begin
-            char_lo = format_char(banner[2 * i],     2 * i);
-            char_hi = format_char(banner[2 * i + 1], 2 * i + 1);
-            repeat (2) @(posedge aclk) axi_write(4 * i, {char_hi, char_lo});
+        axi_read(32'h00, tb_read);
+        if (tb_read !== 32'h00000005)
+            $fatal(1, "active_keys low register readback mismatch: %x", tb_read);
+        axi_read(32'h04, tb_read);
+        if (tb_read !== 32'h00000001)
+            $fatal(1, "active_keys high register readback mismatch: %x", tb_read);
+        for (reg_idx = 0; reg_idx < 8; reg_idx++) begin
+            axi_read(32'h08 + (reg_idx * 4), tb_read);
+            if (tb_read !== expected_tuning[reg_idx])
+                $fatal(1, "tuning_word[%0d] readback mismatch: %x", reg_idx, tb_read);
         end
+        axi_read(32'h28, tb_read);
+        if (tb_read !== 32'h000002A5)
+            $fatal(1, "voice control register readback mismatch: %x", tb_read);
 
-        // 4. Verify Palette Register readback
-        repeat (4) @(posedge aclk) axi_read(32'h800 * 4, tb_read);
-        $info("Read back of palette reg 0 (0x800): %x", tb_read);
-        repeat (4) @(posedge aclk) axi_read(32'h801 * 4, tb_read);
-        $info("Read back of palette reg 1 (0x801): %x", tb_read);
-        
-        // 5. Wait for a complete frame to finish rendering and save BMP
+        // Wait for a complete frame so the rendered keyboard can be saved.
         `ifdef SIM_VIDEO
         @(posedge pixel_vs);
         @(negedge pixel_vs);

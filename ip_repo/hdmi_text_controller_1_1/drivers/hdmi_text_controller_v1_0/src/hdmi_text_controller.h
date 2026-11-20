@@ -15,10 +15,14 @@
 #define STUDENT2NETID "ryanlin5"
 
 struct TEXT_HDMI_STRUCT {
+	uint32_t            ACTIVE_KEYS_LOW;
+	uint32_t            ACTIVE_KEYS_HIGH;
+	uint32_t            TUNING_WORDS[8];
+	uint32_t            VOICE_CONTROL;
 	uint8_t             VRAM [ROWS*COLUMNS*2]; //Week 2 - extended VRAM
 	//declare palette registers here, make sure you properly pad in order to correctly account for
 	//gap in address map between VRAM and start of palette and control registers
-	uint8_t				UNUSED [PALETTE_START - ROWS*COLUMNS*2];
+	uint8_t				UNUSED [PALETTE_START - 11*sizeof(uint32_t) - ROWS*COLUMNS*2];
 	uint32_t			PALETTE [8];
 	uint32_t            FRAME_COUNT; //control registers should appear immediately after palette
 	uint32_t            DRAWX;

@@ -87,3 +87,6 @@ set_property -dict { PACKAGE_PIN U17   IOSTANDARD TMDS_33  } [get_ports {hdmi_tm
 set_property -dict { PACKAGE_PIN R16   IOSTANDARD TMDS_33  } [get_ports {hdmi_tmds_data_p[1]}]
 set_property -dict { PACKAGE_PIN R14   IOSTANDARD TMDS_33  } [get_ports {hdmi_tmds_data_p[2]}]
 
+set_property -dict { PACKAGE_PIN B13 IOSTANDARD LVCMOS33 } [get_ports audio_l]
+set_property -dict { PACKAGE_PIN B14 IOSTANDARD LVCMOS33 } [get_ports audio_r]
+

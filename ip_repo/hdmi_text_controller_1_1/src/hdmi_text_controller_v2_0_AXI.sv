@@ -43,6 +43,10 @@ module hdmi_text_controller_v2_0_AXI #
     input logic [10:0] bram_addr,
     output logic [C_S_AXI_DATA_WIDTH-1:0] palette_regs [8],
     output logic [C_S_AXI_DATA_WIDTH-1:0] doutb,
+    output logic [63:0] active_keys,
+    output logic [255:0] tuning_words,
+    output logic [7:0] voice_gate,
+    output logic [1:0] wave_sel,
     // User ports ends
 
     // Global Clock Signal
@@ -126,30 +130,24 @@ logic  	axi_rvalid;
 // ADDR_LSB = 3 for 64 bits (n downto 3)
 localparam integer ADDR_LSB = (C_S_AXI_DATA_WIDTH/32) + 1;
 localparam integer OPT_MEM_ADDR_BITS = 11;
-localparam integer NUM_WORDS = 1200;
+localparam integer NUM_WORDS = 1211;
 localparam integer PALETTE_ADDR = 12'h800;
-//----------------------------------------------
-//-- Signals for user logic register space example
-//------------------------------------------------
-//-- Number of Slave Registers 4
-//logic [C_S_AXI_DATA_WIDTH-1:0]	slv_reg0;
-//logic [C_S_AXI_DATA_WIDTH-1:0]	slv_reg1;
-//logic [C_S_AXI_DATA_WIDTH-1:0]	slv_reg2;
-//logic [C_S_AXI_DATA_WIDTH-1:0]	slv_reg3;
-//
-//Note: the provided Verilog template had the registered declared as above, but in order to give 
-//students a hint we have replaced the 4 individual registers with an unpacked array of packed logic. 
-//Note that you as the student will still need to extend this to the full register set needed for the lab.
-
 logic	 bram_rden;
 logic	 bram_wren;
 logic [C_S_AXI_DATA_WIDTH-1:0]	 bram_data_out;
 integer	 byte_index;
 logic	 aw_en;
 
-logic    [OPT_MEM_ADDR_BITS:0] addra;
+logic    [OPT_MEM_ADDR_BITS-1:0] addra;
 logic    [C_S_AXI_DATA_WIDTH-1:0] douta;
 logic    [(C_S_AXI_DATA_WIDTH/8)-1:0] wea;
+logic [31:0] slv_regs [0:10];
+
+assign active_keys = {slv_regs[1], slv_regs[0]};
+assign tuning_words = {slv_regs[9], slv_regs[8], slv_regs[7], slv_regs[6],
+                       slv_regs[5], slv_regs[4], slv_regs[3], slv_regs[2]};
+assign voice_gate = slv_regs[10][7:0];
+assign wave_sel = slv_regs[10][9:8];
 
 // I/O Connections assignments
 
@@ -273,6 +271,20 @@ begin
       end
 end
 
+always_ff @(posedge S_AXI_ACLK)
+begin
+    if (S_AXI_ARESETN == 1'b0) begin
+        for (int reg_index = 0; reg_index < 11; reg_index = reg_index + 1)
+            slv_regs[reg_index] <= '0;
+    end else if (bram_wren && (axi_write_word_addr < 11)) begin
+        for (int reg_byte = 0; reg_byte < C_S_AXI_DATA_WIDTH/8; reg_byte = reg_byte + 1) begin
+            if (S_AXI_WSTRB[reg_byte])
+                slv_regs[axi_write_word_addr[3:0]][(reg_byte*8) +: 8]
+                    <= S_AXI_WDATA[(reg_byte*8) +: 8];
+        end
+    end
+end
+
 // Implement write response logic generation
 // The write response and response valid signals are asserted by the slave 
 // when axi_wready, S_AXI_WVALID, axi_wready and S_AXI_WVALID are asserted.  
@@ -394,7 +406,9 @@ logic [C_S_AXI_DATA_WIDTH-1:0] current_DrawY;
 always_comb
 begin
       // Address decoding for reading registers
-     if (axi_read_word_addr >= PALETTE_ADDR && axi_read_word_addr <= PALETTE_ADDR + 12'h007)
+     if (axi_read_word_addr < 11)
+        bram_data_out = slv_regs[axi_read_word_addr[3:0]];
+     else if (axi_read_word_addr >= PALETTE_ADDR && axi_read_word_addr <= PALETTE_ADDR + 12'h007)
         bram_data_out = palette_regs[axi_read_word_addr[2:0]];
      else if (axi_read_word_addr == PALETTE_ADDR + 12'h008)
         bram_data_out = frame_counter;
@@ -462,18 +476,22 @@ begin
 end
 
 assign addra = bram_wren ? axi_write_word_addr : axi_read_word_addr;
-assign wea = (bram_wren && !addra[11] && (addra < NUM_WORDS)) ? S_AXI_WSTRB : 4'b0000;
+assign wea = (bram_wren && (axi_write_word_addr >= 11) &&
+              (axi_write_word_addr < NUM_WORDS)) ? S_AXI_WSTRB : 4'b0000;
+
+logic [10:0] bram_addr_offset;
+assign bram_addr_offset = bram_addr + 11'd11;
 
 //Block Memory Module
 blk_mem_gen_0 bram (
   .clka(S_AXI_ACLK),    // input wire clka
   .wea(wea),      // input wire [3 : 0] wea
-  .addra(addra),  // input wire [9 : 0] addra
+  .addra(addra),  // input wire [10 : 0] addra
   .dina(S_AXI_WDATA),    // input wire [31 : 0] dina
   .douta(douta),  // output wire [31 : 0] douta
   .clkb(S_AXI_ACLK),    // input wire clkb
   .web('0),      // input wire [3 : 0] web
-  .addrb(bram_addr),  // input wire [9 : 0] addrb
+  .addrb(bram_addr_offset),  // input wire [10 : 0] addrb
   .dinb('0),    // input wire [31 : 0] dinb
   .doutb(doutb)  // output wire [31 : 0] doutb
 );

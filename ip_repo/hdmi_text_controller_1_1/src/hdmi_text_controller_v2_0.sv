@@ -22,6 +22,7 @@ module hdmi_text_controller_v2_0 #
     output logic hdmi_clk_p,
     output logic [2:0] hdmi_tx_n,
     output logic [2:0] hdmi_tx_p,
+    output logic audio_out,
 
     // User ports ends
     // Do not modify the ports beyond this line
@@ -63,6 +64,12 @@ module hdmi_text_controller_v2_0 #
     logic [10:0] bram_addr;
     logic [C_AXI_DATA_WIDTH-1:0] doutb;
     logic [C_AXI_DATA_WIDTH-1:0] palette_regs [8];
+    logic [63:0] active_keys;
+    logic [255:0] tuning_words;
+    logic [7:0] voice_gate;
+    logic [1:0] wave_sel;
+
+    assign bram_addr = 11'b0;
     
     assign Clk = axi_aclk;
     assign reset_ah = ~axi_aresetn;
@@ -99,7 +106,11 @@ hdmi_text_controller_v2_0_AXI # (
     .DrawY(drawY),
     .bram_addr(bram_addr),
     .palette_regs(palette_regs),
-    .doutb(doutb)
+    .doutb(doutb),
+    .active_keys(active_keys),
+    .tuning_words(tuning_words),
+    .voice_gate(voice_gate),
+    .wave_sel(wave_sel)
 );
 
 
@@ -156,16 +167,25 @@ hdmi_text_controller_v2_0_AXI # (
     );
 
     
-    //Color Mapper Module   
-    color_mapper color_instance(
+    piano_mapper piano_instance(
+        .Clk(clk_25MHz),
+        .Reset(reset_ah),
         .DrawX(drawX),
         .DrawY(drawY),
-        .doutb(doutb),
-        .palette_regs(palette_regs),
-        .bram_addr(bram_addr),
+        .blank(~vde),
+        .active_keys(active_keys),
         .Red(red),
         .Green(green),
         .Blue(blue)
+    );
+
+    poly_synth_core synth_instance(
+        .Clk(axi_aclk),
+        .Reset(reset_ah),
+        .tuning_words(tuning_words),
+        .voice_gate(voice_gate),
+        .wave_sel(wave_sel),
+        .audio_out(audio_out)
     );
     
 // User logic ends
