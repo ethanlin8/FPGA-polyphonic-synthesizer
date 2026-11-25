@@ -8,6 +8,8 @@ module poly_synth_core (
     input  logic [31:0]  adsr_config,
     input  logic [1:0]   wave_sel,
     output logic [7:0]   voice_idle,
+    output logic [7:0]   scope_sample,
+    output logic         scope_sample_tick,
     output logic         audio_out
 );
 
@@ -452,6 +454,11 @@ module poly_synth_core (
             err = 18'sh20000;
         else
             err = err_wide[17:0];
+    end
+
+    always_comb begin
+        scope_sample = dac_sample[15:8] ^ 8'h80;
+        scope_sample_tick = envelope_sample_tick;
     end
 
     always_ff @(posedge Clk) begin

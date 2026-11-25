@@ -51,6 +51,7 @@ module hdmi_text_controller_v2_0_AXI #
     output logic midi_event_valid,
     output logic [23:0] midi_event_packet,
     output logic [31:0] adsr_config,
+    output logic [4:0] firmware_status,
     // User ports ends
 
     // Global Clock Signal
@@ -145,7 +146,7 @@ logic	 aw_en;
 logic    [OPT_MEM_ADDR_BITS-1:0] addra;
 logic    [C_S_AXI_DATA_WIDTH-1:0] douta;
 logic    [(C_S_AXI_DATA_WIDTH/8)-1:0] wea;
-logic [31:0] slv_regs [0:12];
+logic [31:0] slv_regs [0:13];
 logic [OPT_MEM_ADDR_BITS:0] axi_write_word_addr;
 
 assign active_keys = {slv_regs[1], slv_regs[0]};
@@ -155,6 +156,7 @@ assign voice_gate = slv_regs[10][7:0];
 assign wave_sel = slv_regs[10][9:8];
 assign wave_override_enable = slv_regs[10][10];
 assign adsr_config = slv_regs[12];
+assign firmware_status = slv_regs[13][4:0];
 assign midi_event_valid = slv_reg_wren && (axi_write_word_addr == 11) &&
                           (S_AXI_WSTRB[2:0] == 3'b111);
 assign midi_event_packet = S_AXI_WDATA[23:0];
@@ -284,12 +286,12 @@ end
 always_ff @(posedge S_AXI_ACLK)
 begin
     if (S_AXI_ARESETN == 1'b0) begin
-        for (int reg_index = 0; reg_index < 13; reg_index = reg_index + 1)
+        for (int reg_index = 0; reg_index < 14; reg_index = reg_index + 1)
             slv_regs[reg_index] <= '0;
         // ADSR times are in 10 ms units: 40 ms attack, 180 ms decay,
         // 60% sustain, and 400 ms release.
         slv_regs[12] <= 32'h28991204;
-    end else if (slv_reg_wren && (axi_write_word_addr < 13)) begin
+    end else if (slv_reg_wren && (axi_write_word_addr < 14)) begin
         for (int reg_byte = 0; reg_byte < C_S_AXI_DATA_WIDTH/8; reg_byte = reg_byte + 1) begin
             if (S_AXI_WSTRB[reg_byte])
                 slv_regs[axi_write_word_addr[3:0]][(reg_byte*8) +: 8]
@@ -421,7 +423,7 @@ logic [31:0] frame_counter;
 always_comb
 begin
       // Address decoding for reading registers
-     if (axi_read_word_addr < 13)
+     if (axi_read_word_addr < 14)
         bram_data_out = slv_regs[axi_read_word_addr[3:0]];
      else if (axi_read_word_addr >= PALETTE_ADDR && axi_read_word_addr <= PALETTE_ADDR + 12'h007)
         bram_data_out = palette_regs[axi_read_word_addr[2:0]];

@@ -5,6 +5,7 @@
 #define MIDI_EVENT_OFFSET 0x2CU
 #define VOICE_CONTROL_OFFSET 0x28U
 #define ADSR_CONFIG_OFFSET 0x30U
+#define DISPLAY_STATUS_OFFSET 0x34U
 #define WAVE_OVERRIDE_ENABLE (1U << 10)
 
 static uint32_t midi_base_addr;
@@ -64,4 +65,11 @@ void midi_engine_use_midi_program(void)
 void midi_engine_set_adsr_config(uint32_t config)
 {
     Xil_Out32(midi_base_addr + ADSR_CONFIG_OFFSET, config);
+}
+
+void midi_engine_set_display_status(uint8_t octave_index, uint8_t mode)
+{
+    uint32_t status = ((uint32_t)(mode & 0x03U) << 3) |
+                      (uint32_t)(octave_index & 0x07U);
+    Xil_Out32(midi_base_addr + DISPLAY_STATUS_OFFSET, status);
 }

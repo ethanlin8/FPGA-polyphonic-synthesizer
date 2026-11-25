@@ -58,9 +58,9 @@ static uint8_t loop_recording;
 static uint8_t loop_playing;
 
 static uint8_t song_playing;
-static uint8_t song_selection;
 static uint16_t song_event_index;
 static uint32_t song_next_event_ms;
+static uint8_t last_display_status = 0xFFU;
 
 static uint8_t previous_usb_notes[6] = {
     NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE
@@ -72,7 +72,6 @@ static uint8_t previous_key_1;
 static uint8_t previous_key_2;
 static uint8_t previous_key_3;
 static uint8_t previous_key_9;
-static uint8_t previous_key_0;
 static uint8_t previous_key_minus;
 static uint8_t previous_key_equal;
 static uint8_t previous_backspace;
@@ -95,6 +94,28 @@ static uint32_t now_ms(void)
 static uint8_t time_reached(uint32_t now, uint32_t deadline)
 {
     return (uint32_t)(now - deadline) < 0x80000000U;
+}
+
+static void update_display_status(unsigned int octave_base)
+{
+    uint8_t mode = 0U;
+    uint8_t octave_index;
+    uint8_t status;
+
+    if (loop_recording)
+        mode = 2U;
+    else if (loop_playing)
+        mode = 3U;
+    else if (song_playing)
+        mode = 1U;
+
+    octave_index = (octave_base >= 36U) ?
+                   (uint8_t)((octave_base - 36U) / 12U) : 0U;
+    status = (uint8_t)((mode << 3) | (octave_index & 0x07U));
+    if (status != last_display_status) {
+        midi_engine_set_display_status(octave_index, mode);
+        last_display_status = status;
+    }
 }
 
 static uint8_t key_was_held(uint8_t keycode)
@@ -204,7 +225,7 @@ static void collect_usb_notes(const BOOT_KBD_REPORT *report,
         note_offset = keycode_to_note_offset(report->keycode[i]);
         if (note_offset >= 0) {
             note = octave_base + (unsigned int)note_offset;
-            if (note >= 36U && note <= 96U)
+            if (note >= 21U && note <= 108U)
                 notes[i] = (uint8_t)note;
         }
     }
@@ -219,59 +240,46 @@ static void stop_song(void)
     song_playing = 0;
 }
 
-static void start_song(uint8_t selection)
+static void start_song(void)
 {
     song_playing = 1;
-    song_selection = selection;
     song_event_index = 0;
     song_next_event_ms = now_ms();
-    xil_printf(selection == 1U ? "Bach-style MIDI song started\r\n"
-                               : "Synth MIDI progression started\r\n");
+    xil_printf("Bach-style MIDI song started\r\n");
 }
 
-static void toggle_song(uint8_t selection)
+static void toggle_song(void)
 {
-    if (song_playing && song_selection == selection)
+    if (song_playing)
         stop_song();
     else {
-        stop_song();
-        start_song(selection);
+        start_song();
     }
 }
 
 static void service_song(void)
 {
-    const midi_event_t *events;
-    uint16_t event_count;
     uint32_t now;
 
     if (!song_playing)
         return;
 
-    if (song_selection == 1U) {
-        events = bach_prelude;
-        event_count = (uint16_t)BACH_PRELUDE_EVENT_COUNT;
-    } else {
-        events = synth_progression;
-        event_count = (uint16_t)SYNTH_PROGRESSION_EVENT_COUNT;
-    }
-
     now = now_ms();
     if (!time_reached(now, song_next_event_ms))
         return;
-    if (song_event_index >= event_count) {
+    if (song_event_index >= BACH_PRELUDE_EVENT_COUNT) {
         stop_song();
         return;
     }
 
-    midi_send_packet(events[song_event_index].status,
-                     events[song_event_index].data1,
-                     events[song_event_index].data2);
+    midi_send_packet(bach_prelude[song_event_index].status,
+                     bach_prelude[song_event_index].data1,
+                     bach_prelude[song_event_index].data2);
     song_event_index++;
-    if (song_event_index >= event_count) {
+    if (song_event_index >= BACH_PRELUDE_EVENT_COUNT) {
         song_next_event_ms = now;
     } else {
-        song_next_event_ms += events[song_event_index].delta_ms;
+        song_next_event_ms += bach_prelude[song_event_index].delta_ms;
     }
 }
 
@@ -449,9 +457,7 @@ static void service_keyboard_controls(const BOOT_KBD_REPORT *report)
             midi_engine_set_waveform(2U);
             xil_printf("Waveform: Square\r\n");
         } else if (keycode == 0x26U && !down) {
-            toggle_song(1U);
-        } else if (keycode == 0x27U && !down) {
-            toggle_song(2U);
+            toggle_song();
         } else if (keycode == 0x2DU && !down) {
             toggle_loop_recording();
         } else if (keycode == 0x2EU && !down) {
@@ -498,6 +504,8 @@ int midpoint_demo_main(void)
     midi_engine_init(BASE_ADDR);
     midi_engine_set_waveform(1U);
     midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+    midi_engine_set_display_status(2U, 0U);
+    last_display_status = 2U;
     xil_printf("Waveform: Sawtooth\r\n");
     MAX3421E_init();
     USB_init();
@@ -508,6 +516,7 @@ int midpoint_demo_main(void)
         service_uart_midi();
         service_song();
         service_loop();
+        update_display_status(octave_base);
 
         if (GetUsbTaskState() == USB_STATE_RUNNING) {
             error_reported = 0;
@@ -540,7 +549,7 @@ int midpoint_demo_main(void)
                 }
                 if (octave_down_now && !previous_octave_down && octave_base >= 48U)
                     octave_base -= 12U;
-                if (octave_up_now && !previous_octave_up && octave_base < 84U)
+                if (octave_up_now && !previous_octave_up && octave_base < 96U)
                     octave_base += 12U;
                 previous_octave_down = octave_down_now;
                 previous_octave_up = octave_up_now;

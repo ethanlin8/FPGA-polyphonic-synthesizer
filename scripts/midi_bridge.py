@@ -27,14 +27,14 @@ def list_ports():
 
 def fold_note(note):
     for _ in range(8):
-        if note < 36:
+        if note < 21:
             note += 12
-        elif note > 96:
+        elif note > 108:
             note -= 12
         else:
             break
-    if not 36 <= note <= 96:
-        raise ValueError(f"Unable to fold MIDI note {note} into 36..96")
+    if not 21 <= note <= 108:
+        raise ValueError(f"Unable to fold MIDI note {note} into 21..108")
     return note
 
 

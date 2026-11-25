@@ -16,5 +16,6 @@ void midi_all_notes_off(void);
 void midi_engine_set_waveform(uint8_t wave_sel);
 void midi_engine_use_midi_program(void);
 void midi_engine_set_adsr_config(uint32_t config);
+void midi_engine_set_display_status(uint8_t octave_index, uint8_t mode);
 
 #endif

@@ -6,18 +6,19 @@ Hardware and embedded MicroBlaze software repository for the Spartan-7 (`xc7s50c
 
 ## Current Project State
 
-The current implementation is a hardware polyphonic MIDI synthesizer with a 640x480 HDMI piano renderer.
+The current implementation is an eight-voice hardware MIDI synthesizer with an 88-key (A0-C8) piano renderer on the 640x480 HDMI display.
 
 ### Implemented Features
 
 - Eight hardware synthesizer voices running in the `hdmi_text_controller` custom IP.
 - Hardware MIDI event FIFO with 64 entries.
-- MIDI notes are folded into the 61-key piano range (`MIDI 36..96`) so 88-key controllers and `.mid` files play cleanly.
+- Hardware tuning and key highlighting cover MIDI `21..108` (A0-C8); out-of-range MIDI notes are octave-folded into that range.
 - Idle/release/active voice allocation and oldest-active voice stealing across all eight voices.
 - Pitched sine, sawtooth, and square waveforms with hardware velocity scaling and ADSR envelopes.
 - HDMI highlighting derived directly from the eight active hardware voice gates.
 - USB boot-keyboard support with six simultaneous HID key slots.
-- USB A/Y-style piano controls, octave shifting, waveform controls, two built-in songs, live looper, and UART MIDI input.
+- HDMI oscilloscope trace, waveform and polyphony indicators, ADSR bars, and firmware octave/song/looper status HUD.
+- USB piano controls, octave shifting from C2 to C7, waveform controls, one built-in song, live looper, and UART MIDI input.
 - A PC-side Python MIDI bridge for USB MIDI controllers and MIDI files.
 - Mono synth audio is duplicated to `audio_l` and `audio_r` on `B13`/`B14`.
 
@@ -29,7 +30,6 @@ The current implementation is a hardware polyphonic MIDI synthesizer with a 640x
 | `[` / `]` | Shift the USB piano octave down/up |
 | `1` / `2` / `3` | Select sine / sawtooth / square |
 | `9` | Toggle the Bach-style built-in arrangement |
-| `0` | Toggle the synth progression |
 | `-` | Start/stop live MIDI event recording |
 | `=` | Toggle loop playback |
 | `Backspace` | Panic: silence all voices |
@@ -45,17 +45,17 @@ The USB keyboard starts at octave C4 (`MIDI 60`). HID `ErrorRollOver`/`POSTFail`
 | `0x28` | `slv_reg10` | Waveform selection and software override enable |
 | `0x2C` | `slv_reg11` | Packed MIDI packet `{status, data1, data2}` |
 | `0x30` | `slv_reg12` | ADSR configuration `{release, sustain, decay, attack}` |
+| `0x34` | `slv_reg13` | Firmware HUD state: mode `[4:3]`, octave index `[2:0]` |
 
 The hardware engine combines its own gated voice mask with the software mask for the HDMI piano display.
 
 ### Validation Status
 
-- Vivado RTL compilation/elaboration passed.
-- The integrated Vivado simulation covers staggered AXI MIDI writes, ADSR behavior, 12-note overlapping voice stealing, and folding/release of MIDI `21` and `108`.
-- Out-of-context Vivado 2022.2 post-synthesis setup analysis for the 100 MHz clock reports **WNS = +0.126 ns**.
-- This timing result is out-of-context and does not replace a full routed implementation timing report.
-- The bridge folds MIDI notes and excludes Channel 10 percussion by default.
-- No full board implementation, routed timing run, or Vitis ELF rebuild is claimed in this README until those steps are run with the final checked-in sources.
+- Vivado 2022.2 full hardware implementation completed; routed setup WNS is **+0.648 ns** and hold WHS is **+0.032 ns**. The 25 MHz pixel-clock setup WNS is **+28.261 ns**.
+- Standalone XSim smoke tests passed for MIDI A0/C8 mapping, out-of-range octave folding, key highlighting, and scope-trace rendering.
+- The integrated IP testbench could not be elaborated because the local XSim setup lacks the `blk_mem_gen_v8_4_5` simulation model.
+- The MicroBlaze `synth_app.elf` rebuilt successfully with the updated firmware.
+- These results are from the current local sources; board-level audio and display behavior still requires hardware testing.
 
 ### MIDI UART Bridge
 
@@ -68,7 +68,7 @@ python scripts/midi_bridge.py --port COM8
 python scripts/midi_bridge.py --port COM8 --midi song.mid
 ```
 
-The bridge forwards raw MIDI data at `115200` baud. It skips General MIDI Channel 10 percussion unless `--include-drums` is supplied and octave-folds Note On/Note Off messages into `36..96`.
+The bridge forwards raw MIDI data at `115200` baud. It skips General MIDI Channel 10 percussion unless `--include-drums` is supplied and octave-folds Note On/Note Off messages into `21..108`.
 
 ---
 

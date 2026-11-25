@@ -67,9 +67,17 @@ module hdmi_text_controller_v2_0 #
     logic [63:0] active_keys;
     (* ASYNC_REG = "TRUE" *) logic [63:0] active_keys_sync1;
     (* ASYNC_REG = "TRUE" *) logic [63:0] active_keys_sync2;
-    (* ASYNC_REG = "TRUE" *) logic [60:0] hw_active_keys_sync1;
-    (* ASYNC_REG = "TRUE" *) logic [60:0] hw_active_keys_sync2;
-    logic [63:0] display_active_keys;
+    (* ASYNC_REG = "TRUE" *) logic [87:0] hw_active_keys_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [87:0] hw_active_keys_sync2;
+    (* ASYNC_REG = "TRUE" *) logic [7:0] voice_gate_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [7:0] voice_gate_sync2;
+    (* ASYNC_REG = "TRUE" *) logic [1:0] wave_sel_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [1:0] wave_sel_sync2;
+    (* ASYNC_REG = "TRUE" *) logic [31:0] adsr_config_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [31:0] adsr_config_sync2;
+    (* ASYNC_REG = "TRUE" *) logic [4:0] firmware_status_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [4:0] firmware_status_sync2;
+    logic [87:0] display_active_keys;
     logic [255:0] tuning_words;
     logic [7:0] voice_gate;
     logic [1:0] wave_sel;
@@ -82,14 +90,30 @@ module hdmi_text_controller_v2_0 #
     logic [7:0] engine_voice_gate;
     logic voice_clear;
     logic [7:0] voice_idle;
-    logic [60:0] hw_active_keys;
+    logic [87:0] hw_active_keys;
     logic [1:0] engine_wave_sel;
     logic [1:0] selected_wave;
+    logic [4:0] firmware_status;
+    logic [7:0] scope_sample;
+    logic scope_sample_tick;
+    (* ram_style = "block" *) logic [7:0] scope_ram [0:511];
+    logic [8:0] scope_write_index;
+    logic [8:0] scope_read_addr;
+    logic [8:0] scope_auto_trigger_count;
+    logic [7:0] scope_previous_sample_100;
+    logic scope_capture_active;
+    logic scope_valid_frame;
+    (* ASYNC_REG = "TRUE" *) logic scope_valid_sync1;
+    (* ASYNC_REG = "TRUE" *) logic scope_valid_sync2;
+    logic [7:0] scope_read_sample;
+    logic [7:0] scope_previous_read_sample;
 
     assign bram_addr = 11'b0;
-    assign display_active_keys = active_keys_sync2 |
-                                 {3'b000, hw_active_keys_sync2};
+    assign display_active_keys = hw_active_keys_sync2 |
+                                 {24'b0, active_keys_sync2};
     assign selected_wave = wave_override_enable ? wave_sel : engine_wave_sel;
+    assign scope_read_addr = (drawX >= 10'd63) ?
+                             (drawX - 10'd63) : 9'd0;
     
     assign Clk = axi_aclk;
     assign reset_ah = ~axi_aresetn;
@@ -100,11 +124,74 @@ module hdmi_text_controller_v2_0 #
             active_keys_sync2 <= 0;
             hw_active_keys_sync1 <= 0;
             hw_active_keys_sync2 <= 0;
+            voice_gate_sync1 <= 0;
+            voice_gate_sync2 <= 0;
+            wave_sel_sync1 <= 2'b01;
+            wave_sel_sync2 <= 2'b01;
+            adsr_config_sync1 <= 32'h28991204;
+            adsr_config_sync2 <= 32'h28991204;
+            firmware_status_sync1 <= 0;
+            firmware_status_sync2 <= 0;
+            scope_valid_sync1 <= 0;
+            scope_valid_sync2 <= 0;
         end else begin
             active_keys_sync1 <= active_keys;
             active_keys_sync2 <= active_keys_sync1;
             hw_active_keys_sync1 <= hw_active_keys;
             hw_active_keys_sync2 <= hw_active_keys_sync1;
+            voice_gate_sync1 <= engine_voice_gate;
+            voice_gate_sync2 <= voice_gate_sync1;
+            wave_sel_sync1 <= selected_wave;
+            wave_sel_sync2 <= wave_sel_sync1;
+            adsr_config_sync1 <= adsr_config;
+            adsr_config_sync2 <= adsr_config_sync1;
+            firmware_status_sync1 <= firmware_status;
+            firmware_status_sync2 <= firmware_status_sync1;
+            scope_valid_sync1 <= scope_valid_frame;
+            scope_valid_sync2 <= scope_valid_sync1;
+        end
+    end
+
+    always_ff @(posedge axi_aclk) begin
+        if (reset_ah) begin
+            scope_write_index <= 0;
+            scope_auto_trigger_count <= 0;
+            scope_previous_sample_100 <= 8'd128;
+            scope_capture_active <= 0;
+            scope_valid_frame <= 0;
+        end else if (scope_sample_tick) begin
+            scope_previous_sample_100 <= scope_sample;
+            if (!scope_capture_active) begin
+                if ((scope_previous_sample_100 < 8'd128 &&
+                     scope_sample >= 8'd128) ||
+                    (scope_auto_trigger_count == 9'd511)) begin
+                    scope_ram[0] <= scope_sample;
+                    scope_write_index <= 9'd1;
+                    scope_capture_active <= 1;
+                    scope_auto_trigger_count <= 0;
+                end else begin
+                    scope_auto_trigger_count <= scope_auto_trigger_count + 1'b1;
+                end
+            end else begin
+                scope_ram[scope_write_index] <= scope_sample;
+                if (scope_write_index == 9'd511) begin
+                    scope_write_index <= 0;
+                    scope_capture_active <= 0;
+                    scope_valid_frame <= 1;
+                end else begin
+                    scope_write_index <= scope_write_index + 1'b1;
+                end
+            end
+        end
+    end
+
+    always_ff @(posedge clk_25MHz) begin
+        if (reset_ah) begin
+            scope_read_sample <= 8'd128;
+            scope_previous_read_sample <= 8'd128;
+        end else begin
+            scope_read_sample <= scope_ram[scope_read_addr];
+            scope_previous_read_sample <= scope_read_sample;
         end
     end
 
@@ -148,7 +235,8 @@ hdmi_text_controller_v2_0_AXI # (
     .wave_override_enable(wave_override_enable),
     .midi_event_valid(midi_event_valid),
     .midi_event_packet(midi_event_packet),
-    .adsr_config(adsr_config)
+    .adsr_config(adsr_config),
+    .firmware_status(firmware_status)
 );
 
 
@@ -212,6 +300,13 @@ hdmi_text_controller_v2_0_AXI # (
         .DrawY(drawY),
         .blank(~vde),
         .active_keys(display_active_keys),
+        .scope_sample(scope_read_sample),
+        .scope_previous_sample(scope_previous_read_sample),
+        .scope_valid(scope_valid_sync2),
+        .wave_sel(wave_sel_sync2),
+        .voice_gate(voice_gate_sync2),
+        .adsr_config(adsr_config_sync2),
+        .firmware_status(firmware_status_sync2),
         .Red(red),
         .Green(green),
         .Blue(blue)
@@ -241,6 +336,8 @@ hdmi_text_controller_v2_0_AXI # (
         .adsr_config(adsr_config),
         .wave_sel(selected_wave),
         .voice_idle(voice_idle),
+        .scope_sample(scope_sample),
+        .scope_sample_tick(scope_sample_tick),
         .audio_out(audio_out)
     );
     

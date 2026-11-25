@@ -22,19 +22,6 @@ static const midi_event_t bach_prelude[] = {
     {500,  0x80, 48, 0},  {0, 0x80, 55, 0}, {0, 0x80, 60, 0}, {0, 0x80, 64, 0}
 };
 
-/* Multi-voice synth progression: two 4-note chords. */
-static const midi_event_t synth_progression[] = {
-    {0,    0x90, 36, 88}, {0, 0x90, 48, 82}, {0, 0x90, 55, 80}, {0, 0x90, 60, 84},
-    {0,    0x90, 64, 78}, {0, 0x90, 67, 76}, {0, 0x90, 72, 74}, {0, 0x90, 76, 72},
-    {600,  0x80, 36, 0},  {0, 0x80, 48, 0}, {0, 0x80, 55, 0}, {0, 0x80, 60, 0},
-    {0,    0x80, 64, 0},  {0, 0x80, 67, 0}, {0, 0x80, 72, 0}, {0, 0x80, 76, 0},
-    {200,  0x90, 41, 88}, {0, 0x90, 53, 82}, {0, 0x90, 57, 80}, {0, 0x90, 60, 84},
-    {0,    0x90, 65, 78}, {0, 0x90, 69, 76}, {0, 0x90, 72, 74}, {0, 0x90, 77, 72},
-    {600,  0x80, 41, 0},  {0, 0x80, 53, 0}, {0, 0x80, 57, 0}, {0, 0x80, 60, 0},
-    {0,    0x80, 65, 0},  {0, 0x80, 69, 0}, {0, 0x80, 72, 0}, {0, 0x80, 77, 0}
-};
-
 #define BACH_PRELUDE_EVENT_COUNT (sizeof(bach_prelude) / sizeof(bach_prelude[0]))
-#define SYNTH_PROGRESSION_EVENT_COUNT (sizeof(synth_progression) / sizeof(synth_progression[0]))
 
 #endif

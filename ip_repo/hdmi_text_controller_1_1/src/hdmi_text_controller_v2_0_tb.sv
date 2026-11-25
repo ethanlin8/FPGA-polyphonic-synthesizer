@@ -287,11 +287,11 @@ module hdmi_text_controller_tb();
         axi_write(32'h28, 32'h000002A5);
         axi_write_staggered(32'h2C, 32'h00903C64, 1'b1);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys[24] !== 1'b1)
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys[39] !== 1'b1)
             $fatal(1, "MIDI note-on did not set the hardware piano key");
         axi_write_staggered(32'h2C, 32'h00803C00, 1'b0);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys[24] !== 1'b0)
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys[39] !== 1'b0)
             $fatal(1, "MIDI note-off did not clear the hardware piano key");
 
         axi_read(32'h00, tb_read);
@@ -314,6 +314,10 @@ module hdmi_text_controller_tb();
         axi_read(32'h30, tb_read);
         if (tb_read !== 32'h28991204)
             $fatal(1, "ADSR configuration reset value mismatch: %x", tb_read);
+        axi_write(32'h34, 32'h00000015);
+        axi_read(32'h34, tb_read);
+        if (tb_read !== 32'h00000015)
+            $fatal(1, "firmware status register readback mismatch: %x", tb_read);
 
         force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick = 1'b1;
         axi_write(32'h2C, 32'h00903C64);
@@ -386,7 +390,7 @@ module hdmi_text_controller_tb();
         end
         wait_midi_pipeline_empty();
         if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
-            ((61'hF << 12) | (61'hF << 20)))
+            ((88'hF << 27) | (88'hF << 35)))
             $fatal(1, "Allocator failed to prioritize release voices: %x",
                    hdmi_text_controller_v1_0_inst.hw_active_keys);
 
@@ -396,7 +400,7 @@ module hdmi_text_controller_tb();
         end
         wait_midi_pipeline_empty();
         if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
-            (61'hFF << 24))
+            (88'hFF << 35))
             $fatal(1, "12-note burst did not retain the newest eight gated notes: %x",
                    hdmi_text_controller_v1_0_inst.hw_active_keys);
 
@@ -408,21 +412,21 @@ module hdmi_text_controller_tb();
 
         axi_write(32'h2C, 32'h00901564);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== (61'h1 << 9))
-            $fatal(1, "A0 did not octave-fold to A2 (MIDI 45)");
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'h1)
+            $fatal(1, "A0 did not map to the first native piano key");
         axi_write(32'h2C, 32'h00801500);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 61'd0)
-            $fatal(1, "A0 Note Off did not release its folded A2 key");
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0)
+            $fatal(1, "A0 Note Off did not release its native key");
 
         axi_write(32'h2C, 32'h00906C64);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== (61'h1 << 60))
-            $fatal(1, "C8 did not octave-fold to C7 (MIDI 96)");
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== (88'h1 << 87))
+            $fatal(1, "C8 did not map to the final native piano key");
         axi_write(32'h2C, 32'h00806C00);
         repeat (4) @(posedge aclk);
-        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 61'd0)
-            $fatal(1, "C8 Note Off did not release its folded C7 key");
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0)
+            $fatal(1, "C8 Note Off did not release its native key");
 
         // Wait for a complete frame so the rendered keyboard can be saved.
         `ifdef SIM_VIDEO
