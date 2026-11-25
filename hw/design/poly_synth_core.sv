@@ -3,29 +3,93 @@ module poly_synth_core (
     input  logic         Reset,
     input  logic [255:0] tuning_words,
     input  logic [7:0]   voice_gate,
+    input  logic [55:0]  velocity_words,
+    input  logic         voice_clear,
+    input  logic [31:0]  adsr_config,
     input  logic [1:0]   wave_sel,
+    output logic [7:0]   voice_idle,
     output logic         audio_out
 );
 
     logic [31:0] phase_acc [0:7];
     logic signed [15:0] sine_rom [0:255];
     logic signed [15:0] voice_wave [0:7];
-    logic signed [15:0] voice_scaled [0:7];
-    logic signed [16:0] pair_sum [0:3];
-    logic signed [17:0] quad_sum [0:1];
-    logic signed [19:0] mix_sum;
-    logic signed [15:0] clipped_next;
-    logic signed [15:0] clipped_sample;
+    logic signed [15:0] voice_sample_reg [0:7];
+    logic [6:0] voice_velocity_reg [0:7];
+    logic [15:0] envelope_sample_reg [0:7];
+    logic [15:0] envelope_level [0:7];
+    logic signed [23:0] voice_velocity_product [0:7];
+    logic [15:0] stage1_envelope [0:7];
+    logic signed [40:0] voice_env_product [0:7];
+    logic [2:0] envelope_state [0:7];
+    logic [16:0] envelope_elapsed [0:7];
+    logic [15:0] envelope_fraction [0:7];
+    logic [31:0] envelope_step_q16 [0:7];
+    logic [31:0] step_dividend [0:7];
+    logic [31:0] step_div_quotient [0:7];
+    logic [16:0] step_divisor [0:7];
+    logic [17:0] step_div_remainder [0:7];
+    logic [5:0] step_div_remaining [0:7];
+    logic [7:0] step_div_active;
+    logic [31:0] step_div_quotient_next [0:7];
+    logic [17:0] step_div_remainder_next [0:7];
+    logic [16:0] envelope_fraction_add [0:7];
+    logic [16:0] envelope_fraction_sub [0:7];
+    logic [7:0] prev_gate;
+    logic [7:0] voice_running;
+    logic envelope_sample_tick;
+    logic [10:0] envelope_clock_divider;
+    logic signed [23:0] voice_scaled [0:7];
+    logic signed [23:0] voice_scaled_next [0:7];
+    logic signed [24:0] pair_sum [0:3];
+    logic signed [24:0] pair_sum_next [0:3];
+    logic signed [25:0] quad_sum [0:1];
+    logic signed [25:0] quad_sum_next [0:1];
+    logic signed [26:0] mix_sum_next;
+    logic signed [19:0] clipped_next;
+    logic signed [19:0] clipped_sample;
+    logic signed [15:0] dac_sample;
     logic [15:0] x_unsigned;
     logic [15:0] x_clamped;
+    logic [15:0] x_clamped_next;
     logic signed [19:0] e1_ext;
     logic signed [19:0] e2_ext;
     logic signed [19:0] y_unq;
+    logic signed [19:0] y_unq_reg;
     logic signed [19:0] err_wide;
     logic signed [17:0] e1;
     logic signed [17:0] e2;
     logic signed [17:0] err;
+    logic modulator_phase;
+    logic modulator_silence;
     logic dout;
+    logic [7:0] attack_units;
+    logic [7:0] decay_units;
+    logic [7:0] sustain_level;
+    logic [7:0] release_units;
+    logic [15:0] sustain_target;
+    logic [16:0] attack_samples;
+    logic [16:0] decay_samples;
+    logic [16:0] release_samples;
+    logic [16:0] attack_samples_next;
+    logic [16:0] decay_samples_next;
+    logic [16:0] release_samples_next;
+
+    localparam logic [2:0] ENV_IDLE = 3'd0;
+    localparam logic [2:0] ENV_ATTACK = 3'd1;
+    localparam logic [2:0] ENV_DECAY = 3'd2;
+    localparam logic [2:0] ENV_SUSTAIN = 3'd3;
+    localparam logic [2:0] ENV_RELEASE = 3'd4;
+
+    function automatic logic [16:0] duration_to_samples(input logic [7:0] duration_10ms);
+        logic [21:0] scaled_duration;
+        begin
+            scaled_duration = (duration_10ms * 22'd15625) + 22'd16;
+            duration_to_samples = scaled_duration[21:5];
+            if (duration_to_samples == 0)
+                duration_to_samples = 17'd1;
+        end
+    endfunction
 
     initial begin
         sine_rom[0] = 16'sd0;
@@ -287,60 +351,99 @@ module poly_synth_core (
     end
 
     always_comb begin
+        attack_units = (adsr_config[7:0] == 0) ? 8'd1 : adsr_config[7:0];
+        decay_units = (adsr_config[15:8] == 0) ? 8'd1 : adsr_config[15:8];
+        sustain_level = adsr_config[23:16];
+        release_units = (adsr_config[31:24] == 0) ? 8'd1 : adsr_config[31:24];
+        sustain_target = {sustain_level, sustain_level};
+        attack_samples_next = duration_to_samples(attack_units);
+        decay_samples_next = duration_to_samples(decay_units);
+        release_samples_next = duration_to_samples(release_units);
+        envelope_sample_tick = (envelope_clock_divider == 11'd2047);
+
         for (int voice = 0; voice < 8; voice++) begin
+            voice_running[voice] = voice_gate[voice] ||
+                                   (envelope_state[voice] != ENV_IDLE);
+            envelope_fraction_add[voice] =
+                {1'b0, envelope_fraction[voice]} +
+                {1'b0, envelope_step_q16[voice][15:0]};
+            envelope_fraction_sub[voice] =
+                {1'b0, envelope_fraction[voice]} -
+                {1'b0, envelope_step_q16[voice][15:0]};
+            step_div_remainder_next[voice] =
+                {step_div_remainder[voice][16:0], step_dividend[voice][31]};
+            step_div_quotient_next[voice] =
+                {step_div_quotient[voice][30:0], 1'b0};
+            if (step_div_remainder_next[voice] >= {1'b0, step_divisor[voice]}) begin
+                step_div_remainder_next[voice] =
+                    step_div_remainder_next[voice] - {1'b0, step_divisor[voice]};
+                step_div_quotient_next[voice][0] = 1'b1;
+            end
+            voice_idle[voice] = (envelope_state[voice] == ENV_IDLE);
             voice_wave[voice] = 16'sd0;
-            if (voice_gate[voice]) begin
+            if (voice_running[voice]) begin
                 case (wave_sel)
                     2'b00: voice_wave[voice] = sine_rom[phase_acc[voice][31:24]];
                     2'b01: voice_wave[voice] = $signed(phase_acc[voice][31:16]);
-                    2'b10: voice_wave[voice] = phase_acc[voice][31] ? 16'sh7FFF : 16'sh8000;
+                    2'b10: voice_wave[voice] =
+                               phase_acc[voice][31] ? 16'sh7FFF : 16'sh8000;
                     default: voice_wave[voice] = sine_rom[phase_acc[voice][31:24]];
                 endcase
             end
+
+            voice_env_product[voice] =
+                $signed({{17{voice_velocity_product[voice][23]}},
+                         voice_velocity_product[voice]}) *
+                $signed({24'd0, 1'b0, stage1_envelope[voice]});
+            voice_scaled_next[voice] = voice_env_product[voice] >>> 23;
         end
 
         for (int pair = 0; pair < 4; pair++) begin
-            pair_sum[pair] =
-                $signed({voice_scaled[pair*2][15], voice_scaled[pair*2]}) +
-                $signed({voice_scaled[pair*2+1][15], voice_scaled[pair*2+1]});
+            pair_sum_next[pair] =
+                $signed({voice_scaled[pair*2][23], voice_scaled[pair*2]}) +
+                $signed({voice_scaled[pair*2+1][23], voice_scaled[pair*2+1]});
         end
-        quad_sum[0] =
-            $signed({pair_sum[0][16], pair_sum[0]}) +
-            $signed({pair_sum[1][16], pair_sum[1]});
-        quad_sum[1] =
-            $signed({pair_sum[2][16], pair_sum[2]}) +
-            $signed({pair_sum[3][16], pair_sum[3]});
-        mix_sum =
-            $signed({{2{quad_sum[0][17]}}, quad_sum[0]}) +
-            $signed({{2{quad_sum[1][17]}}, quad_sum[1]});
+        quad_sum_next[0] =
+            $signed({pair_sum[0][24], pair_sum[0]}) +
+            $signed({pair_sum[1][24], pair_sum[1]});
+        quad_sum_next[1] =
+            $signed({pair_sum[2][24], pair_sum[2]}) +
+            $signed({pair_sum[3][24], pair_sum[3]});
+        mix_sum_next =
+            $signed({quad_sum[0][25], quad_sum[0]}) +
+            $signed({quad_sum[1][25], quad_sum[1]});
 
-        if (mix_sum > 20'sd32767)
-            clipped_next = 16'sh7FFF;
-        else if (mix_sum < -20'sd32768)
-            clipped_next = 16'sh8000;
+        if (mix_sum_next > 27'sd524287)
+            clipped_next = 20'sh7FFFF;
+        else if (mix_sum_next < -27'sd524288)
+            clipped_next = 20'sh80000;
         else
-            clipped_next = mix_sum[15:0];
+            clipped_next = mix_sum_next[19:0];
 
-        x_unsigned = $unsigned(clipped_sample) ^ 16'h8000;
+        if (clipped_sample > 20'sd32767)
+            dac_sample = 16'sh7FFF;
+        else if (clipped_sample < -20'sd32768)
+            dac_sample = 16'sh8000;
+        else
+            dac_sample = clipped_sample[15:0];
+        x_unsigned = $unsigned(dac_sample) ^ 16'h8000;
         if (x_unsigned < 16'd2048)
-            x_clamped = 16'd2048;
+            x_clamped_next = 16'd2048;
         else if (x_unsigned > 16'd63487)
-            x_clamped = 16'd63487;
+            x_clamped_next = 16'd63487;
         else
-            x_clamped = x_unsigned;
+            x_clamped_next = x_unsigned;
 
         e1_ext = {{2{e1[17]}}, e1};
         e2_ext = {{2{e2[17]}}, e2};
-        // 1.5/-0.5 taps keep 18-bit state bounded; 2/-1 wrapped in simulation.
         y_unq = $signed({4'b0000, x_clamped}) +
                 e1_ext + (e1_ext >>> 1) - (e2_ext >>> 1);
-        if (x_clamped == 16'd32768) begin
-            // Alternate at exact silence to guarantee a 50% DAC duty cycle.
+        if (modulator_silence) begin
             dout = ~audio_out;
             err_wide = 20'sd0;
         end else begin
-            dout = y_unq >= 20'sd32768;
-            err_wide = y_unq - (dout ? 20'sd65535 : 20'sd0);
+            dout = y_unq_reg >= 20'sd32768;
+            err_wide = y_unq_reg - (dout ? 20'sd65535 : 20'sd0);
         end
 
         if (err_wide > 20'sd131071)
@@ -353,41 +456,238 @@ module poly_synth_core (
 
     always_ff @(posedge Clk) begin
         if (Reset) begin
+            envelope_clock_divider <= 0;
+            prev_gate <= 0;
+            attack_samples <= 17'd1953;
+            decay_samples <= 17'd8790;
+            release_samples <= 17'd19531;
             for (int voice = 0; voice < 8; voice++) begin
-                phase_acc[voice] <= 32'd0;
-                voice_scaled[voice] <= 16'sd0;
+                phase_acc[voice] <= 0;
+                envelope_state[voice] <= ENV_IDLE;
+                envelope_level[voice] <= 0;
+                envelope_fraction[voice] <= 0;
+                envelope_elapsed[voice] <= 0;
+                envelope_step_q16[voice] <= 0;
+                step_dividend[voice] <= 0;
+                step_div_quotient[voice] <= 0;
+                step_divisor[voice] <= 0;
+                step_div_remainder[voice] <= 0;
+                step_div_remaining[voice] <= 0;
+                step_div_active[voice] <= 0;
+                voice_sample_reg[voice] <= 0;
+                voice_velocity_reg[voice] <= 0;
+                envelope_sample_reg[voice] <= 0;
+                voice_velocity_product[voice] <= 0;
+                stage1_envelope[voice] <= 0;
+                voice_scaled[voice] <= 0;
             end
+            for (int pair = 0; pair < 4; pair++)
+                pair_sum[pair] <= 0;
+            for (int quad = 0; quad < 2; quad++)
+                quad_sum[quad] <= 0;
         end else begin
+            prev_gate <= voice_gate;
+            if (envelope_sample_tick)
+                envelope_clock_divider <= 0;
+            else
+                envelope_clock_divider <= envelope_clock_divider + 1'b1;
+            attack_samples <= attack_samples_next;
+            decay_samples <= decay_samples_next;
+            release_samples <= release_samples_next;
+
             for (int voice = 0; voice < 8; voice++) begin
-                voice_scaled[voice] <= $signed(voice_wave[voice]) >>> 1;
-                if (voice_gate[voice])
-                    phase_acc[voice] <= phase_acc[voice] + tuning_words[voice*32 +: 32];
+                if (voice_running[voice])
+                    phase_acc[voice] <=
+                        phase_acc[voice] + tuning_words[voice*32 +: 32];
                 else
-                    phase_acc[voice] <= 32'd0;
+                    phase_acc[voice] <= 0;
+
+                if (step_div_active[voice]) begin
+                    step_dividend[voice] <= {step_dividend[voice][30:0], 1'b0};
+                    step_div_quotient[voice] <= step_div_quotient_next[voice];
+                    step_div_remainder[voice] <= step_div_remainder_next[voice];
+                    if (step_div_remaining[voice] == 6'd1) begin
+                        step_div_active[voice] <= 0;
+                        step_div_remaining[voice] <= 0;
+                        envelope_step_q16[voice] <=
+                            step_div_quotient_next[voice];
+                    end else begin
+                        step_div_remaining[voice] <=
+                            step_div_remaining[voice] - 1'b1;
+                    end
+                end
+
+                voice_sample_reg[voice] <=
+                    voice_running[voice] ? voice_wave[voice] : 16'sd0;
+                voice_velocity_reg[voice] <=
+                    voice_running[voice] ? velocity_words[voice*7 +: 7] : 7'd0;
+                envelope_sample_reg[voice] <=
+                    voice_running[voice] ? envelope_level[voice] : 16'd0;
+                voice_velocity_product[voice] <=
+                    $signed({{8{voice_sample_reg[voice][15]}},
+                             voice_sample_reg[voice]}) *
+                    $signed({16'd0, 1'b0, voice_velocity_reg[voice]});
+                stage1_envelope[voice] <= envelope_sample_reg[voice];
+                voice_scaled[voice] <= voice_scaled_next[voice];
+
+                if (voice_clear) begin
+                    envelope_state[voice] <= ENV_IDLE;
+                    envelope_level[voice] <= 0;
+                    envelope_fraction[voice] <= 0;
+                    envelope_elapsed[voice] <= 0;
+                    envelope_step_q16[voice] <= 0;
+                    step_div_active[voice] <= 0;
+                end else if (voice_gate[voice] && !prev_gate[voice]) begin
+                    envelope_state[voice] <= ENV_ATTACK;
+                    envelope_level[voice] <= 0;
+                    envelope_fraction[voice] <= 0;
+                    envelope_elapsed[voice] <= 0;
+                    step_dividend[voice] <= {16'hFFFF, 16'b0};
+                    step_div_quotient[voice] <= 0;
+                    step_divisor[voice] <= attack_samples;
+                    step_div_remainder[voice] <= 0;
+                    step_div_remaining[voice] <= 6'd32;
+                    step_div_active[voice] <= 1;
+                end else if (!voice_gate[voice] && prev_gate[voice]) begin
+                    if (envelope_level[voice] == 0 &&
+                        envelope_fraction[voice] == 0) begin
+                        envelope_state[voice] <= ENV_IDLE;
+                        envelope_elapsed[voice] <= 0;
+                        envelope_step_q16[voice] <= 0;
+                        step_div_active[voice] <= 0;
+                    end else begin
+                        envelope_state[voice] <= ENV_RELEASE;
+                        envelope_elapsed[voice] <= 0;
+                        step_dividend[voice] <=
+                            {envelope_level[voice], 16'b0};
+                        step_div_quotient[voice] <= 0;
+                        step_divisor[voice] <= release_samples;
+                        step_div_remainder[voice] <= 0;
+                        step_div_remaining[voice] <= 6'd32;
+                        step_div_active[voice] <= 1;
+                    end
+                end else if (envelope_sample_tick) begin
+                    case (envelope_state[voice])
+                        ENV_IDLE: begin
+                            envelope_level[voice] <= 0;
+                            envelope_fraction[voice] <= 0;
+                            envelope_elapsed[voice] <= 0;
+                        end
+                        ENV_ATTACK: begin
+                            if ((envelope_elapsed[voice] + 1'b1) >= attack_samples) begin
+                                envelope_level[voice] <= 16'hFFFF;
+                                envelope_fraction[voice] <= 0;
+                                envelope_state[voice] <=
+                                    (sustain_target == 16'hFFFF) ? ENV_SUSTAIN : ENV_DECAY;
+                                envelope_elapsed[voice] <= 0;
+                                step_dividend[voice] <=
+                                    {(16'hFFFF - sustain_target), 16'b0};
+                                step_div_quotient[voice] <= 0;
+                                step_divisor[voice] <= decay_samples;
+                                step_div_remainder[voice] <= 0;
+                                step_div_remaining[voice] <= 6'd32;
+                                step_div_active[voice] <= 1;
+                            end else begin
+                                envelope_level[voice] <=
+                                    envelope_level[voice] +
+                                    envelope_step_q16[voice][31:16] +
+                                    envelope_fraction_add[voice][16];
+                                envelope_fraction[voice] <=
+                                    envelope_fraction_add[voice][15:0];
+                                envelope_elapsed[voice] <=
+                                    envelope_elapsed[voice] + 1'b1;
+                            end
+                        end
+                        ENV_DECAY: begin
+                            if ((envelope_elapsed[voice] + 1'b1) >= decay_samples) begin
+                                envelope_level[voice] <= sustain_target;
+                                envelope_fraction[voice] <= 0;
+                                envelope_state[voice] <= ENV_SUSTAIN;
+                                envelope_elapsed[voice] <= 0;
+                            end else begin
+                                envelope_level[voice] <=
+                                    envelope_level[voice] -
+                                    envelope_step_q16[voice][31:16] -
+                                    envelope_fraction_sub[voice][16];
+                                envelope_fraction[voice] <=
+                                    envelope_fraction_sub[voice][15:0];
+                                envelope_elapsed[voice] <=
+                                    envelope_elapsed[voice] + 1'b1;
+                            end
+                        end
+                        ENV_SUSTAIN: begin
+                            envelope_level[voice] <= sustain_target;
+                            envelope_fraction[voice] <= 0;
+                            envelope_elapsed[voice] <= 0;
+                        end
+                        ENV_RELEASE: begin
+                            if ((envelope_elapsed[voice] + 1'b1) >= release_samples) begin
+                                envelope_level[voice] <= 0;
+                                envelope_fraction[voice] <= 0;
+                                envelope_state[voice] <= ENV_IDLE;
+                                envelope_elapsed[voice] <= 0;
+                            end else begin
+                                envelope_level[voice] <=
+                                    envelope_level[voice] -
+                                    envelope_step_q16[voice][31:16] -
+                                    envelope_fraction_sub[voice][16];
+                                envelope_fraction[voice] <=
+                                    envelope_fraction_sub[voice][15:0];
+                                envelope_elapsed[voice] <=
+                                    envelope_elapsed[voice] + 1'b1;
+                            end
+                        end
+                        default: begin
+                            envelope_state[voice] <= ENV_IDLE;
+                            envelope_level[voice] <= 0;
+                            envelope_fraction[voice] <= 0;
+                            envelope_elapsed[voice] <= 0;
+                            envelope_step_q16[voice] <= 0;
+                            step_div_active[voice] <= 0;
+                        end
+                    endcase
+                end
             end
+            for (int pair = 0; pair < 4; pair++)
+                pair_sum[pair] <= pair_sum_next[pair];
+            for (int quad = 0; quad < 2; quad++)
+                quad_sum[quad] <= quad_sum_next[quad];
         end
     end
 
     always_ff @(posedge Clk) begin
-        if (Reset)
-            clipped_sample <= 16'sd0;
-        else
+        if (Reset) begin
+            clipped_sample <= 20'sd0;
+            x_clamped <= 16'd32768;
+        end else begin
             clipped_sample <= clipped_next;
+            x_clamped <= x_clamped_next;
+        end
     end
 
     always_ff @(posedge Clk) begin
         if (Reset) begin
-            e1 <= 18'sd0;
-            e2 <= 18'sd0;
-            audio_out <= 1'b0;
-        end else if (x_clamped == 16'd32768) begin
-            e1 <= 18'sd0;
-            e2 <= 18'sd0;
-            audio_out <= dout;
+            e1 <= 0;
+            e2 <= 0;
+            y_unq_reg <= 20'sd32768;
+            modulator_phase <= 0;
+            modulator_silence <= 1;
+            audio_out <= 0;
+        end else if (!modulator_phase) begin
+            y_unq_reg <= y_unq;
+            modulator_silence <= (x_clamped == 16'd32768);
+            modulator_phase <= 1;
         end else begin
-            e2 <= e1;
-            e1 <= err;
-            audio_out <= dout;
+            modulator_phase <= 0;
+            if (modulator_silence) begin
+                e1 <= 0;
+                e2 <= 0;
+                audio_out <= ~audio_out;
+            end else begin
+                e2 <= e1;
+                e1 <= err;
+                audio_out <= dout;
+            end
         end
     end
 

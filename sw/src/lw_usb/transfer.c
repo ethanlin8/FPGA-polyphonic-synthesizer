@@ -5,8 +5,6 @@
 #include <xtmrctr.h>
 #include <xil_printf.h>
 
-#define TICKS_PER_MILLIS 100000
-
 extern XTmrCtr Usb_timer;
 
 
@@ -145,7 +143,8 @@ BYTE XferCtrlND( BYTE addr, BYTE ep, WORD nbytes, BYTE* dataptr, BOOL direction 
 /* return codes 0x00-0x0f are HRSLT( 0x00 being success ), 0xff means timeout                       */
 BYTE XferDispatchPkt( BYTE token, BYTE ep )
 {
- DWORD timeout = (XTmrCtr_GetValue(&Usb_timer, 0)/TICKS_PER_MILLIS) + USB_XFER_TIMEOUT;
+ DWORD start_ticks = XTmrCtr_GetValue(&Usb_timer, 0);
+ DWORD timeout_ticks = USB_XFER_TIMEOUT * USB_TIMER_TICKS_PER_MS;
  BYTE tmpdata;
  BYTE rcode;
  char retry_count = 0;
@@ -154,7 +153,8 @@ BYTE XferDispatchPkt( BYTE token, BYTE ep )
     while( 1 ) {
         MAXreg_wr( rHXFR, ( token|ep ));            //launch the transfer
         rcode = 0xff;
-        while( (XTmrCtr_GetValue(&Usb_timer, 0)/TICKS_PER_MILLIS) < timeout ) {
+        while( (DWORD)(XTmrCtr_GetValue(&Usb_timer, 0) - start_ticks) <
+               timeout_ticks ) {
             tmpdata = MAXreg_rd( rHIRQ );
             if( tmpdata & bmHXFRDNIRQ ) {
                 MAXreg_wr( rHIRQ, bmHXFRDNIRQ );    //clear the interrupt
@@ -192,29 +192,49 @@ BYTE XferDispatchPkt( BYTE token, BYTE ep )
     Keep sending INs and writes data to memory area pointed by 'data' */
 /* rcode 0 if no errors. rcode 01-0f is relayed from prvXferDispatchPkt(). Rcode f0 means RCVDAVIRQ error,
             fe USB xfer timeout */
-BYTE XferInTransfer( BYTE addr/* not sure if it's necessary */, BYTE ep, WORD nbytes, BYTE* data, BYTE maxpktsize )
+BYTE XferInTransferCount( BYTE addr/* not sure if it's necessary */, BYTE ep, WORD nbytes, BYTE* data, BYTE maxpktsize, WORD* bytes_read )
 {
  BYTE rcode;
  BYTE i;
- BYTE tmpbyte;
  BYTE pktsize;
+ BYTE copy_size;
+ BYTE packet_data[EP_MAX_PKT_INTR_FS];
  WORD xfrlen = 0;
+    if (bytes_read != NULL)
+        *bytes_read = 0;
     MAXreg_wr( rHCTL, devtable[ addr ].epinfo[ ep ].rcvToggle );    //set toggle value
     while( 1 ) { // use a 'return' to exit this loop
         rcode = XferDispatchPkt( tokIN, ep );           //IN packet to EP-'endpoint'. Function takes care of NAKS.
         if( rcode ) {
+            if (bytes_read != NULL)
+                *bytes_read = xfrlen;
             return( rcode );                            //should be 0, indicating ACK. Else return error code.
         }
         /* check for RCVDAVIRQ and generate error if not present */
         /* the only case when absence of RCVDAVIRQ makes sense is when toggle error occurred. Need to add handling for that */
         if(( MAXreg_rd( rHIRQ ) & bmRCVDAVIRQ ) == 0 ) {
+            if (bytes_read != NULL)
+                *bytes_read = xfrlen;
             return ( 0xf0 );                            //receive error
         }
         pktsize = MAXreg_rd( rRCVBC );                  //number of received bytes
-        //xil_printf ("pktsize: %d\n", pktsize);
-        data = MAXbytes_rd( rRCVFIFO, pktsize, data );
+        if (pktsize > sizeof(packet_data)) {
+            MAXreg_wr(rHIRQ, bmRCVDAVIRQ);
+            if (bytes_read != NULL)
+                *bytes_read = xfrlen;
+            return (0xf0);
+        }
+        if (pktsize != 0)
+            MAXbytes_rd(rRCVFIFO, pktsize, packet_data);
+        copy_size = (xfrlen < nbytes) ? (BYTE)(nbytes - xfrlen) : 0;
+        if (copy_size > pktsize)
+            copy_size = pktsize;
+        for (i = 0; i < copy_size; i++)
+            data[xfrlen + i] = packet_data[i];
         MAXreg_wr( rHIRQ, bmRCVDAVIRQ );                // Clear the IRQ & free the buffer
         xfrlen += pktsize;                              // add this packet's byte count to total transfer length
+        if (bytes_read != NULL)
+            *bytes_read = xfrlen;
         /* The transfer is complete under two conditions:           */
         /* 1. The device sent a short packet (L.T. maxPacketSize)   */
         /* 2. 'nbytes' have been transferred.                       */
@@ -229,6 +249,11 @@ BYTE XferInTransfer( BYTE addr/* not sure if it's necessary */, BYTE ep, WORD nb
         }
   }//while( 1 )
 }
+BYTE XferInTransfer( BYTE addr, BYTE ep, WORD nbytes, BYTE* data, BYTE maxpktsize )
+{
+    return XferInTransferCount(addr, ep, nbytes, data, maxpktsize, NULL);
+}
+
 /* initialization of USB data structures */
 void USB_init( void )
 {
@@ -278,11 +303,12 @@ void USB_Task( void )
         case( USB_STATE_ATTACHED ):                     //prepare for enumeration
             switch( usb_task_state ) {
                 case( USB_STATE_ATTACHED ):
-                    usb_delay = (XTmrCtr_GetValue(&Usb_timer, 0)/TICKS_PER_MILLIS) + 200;           //initial settle 200ms
+                    usb_delay = XTmrCtr_GetValue(&Usb_timer, 0);
                 	usb_task_state = USB_ATTACHED_SUBSTATE_SETTLE;
                     break;//case( USB_STATE_ATTACHED )
                 case( USB_ATTACHED_SUBSTATE_SETTLE ):   //waiting for settle timer to expire
-                    if( (XTmrCtr_GetValue(&Usb_timer, 0)/TICKS_PER_MILLIS) > usb_delay ) {
+                    if ((DWORD)(XTmrCtr_GetValue(&Usb_timer, 0) - usb_delay) >=
+                        USB_SETTLE_TIME * USB_TIMER_TICKS_PER_MS) {
                         usb_task_state = USB_ATTACHED_SUBSTATE_RESET_DEVICE;
                     }
                     break;//case( USB_ATTACHED_SUBSTATE_SETTLE )

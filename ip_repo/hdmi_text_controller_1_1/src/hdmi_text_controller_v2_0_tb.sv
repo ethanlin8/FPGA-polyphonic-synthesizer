@@ -1,9 +1,6 @@
 //HDMI Text Controller Example Testbench for ECE 385
 //Spring 2026 Distribution
 
-`define SIM_VIDEO //Comment out to simulate AXI bus only
-                    //Uncomment to simulate entire screen and write BMP (slow)
-
 module hdmi_text_controller_tb();
 
 	//clock and reset_n signals
@@ -44,6 +41,14 @@ module hdmi_text_controller_tb();
     logic [9:0] drawX, drawY;
     logic [31:0] tb_read;
     logic [31:0] expected_tuning [0:7];
+    logic [15:0] env_level_after_100;
+    logic signed [23:0] expected_stage1_product;
+    logic signed [40:0] expected_stage2_product;
+    logic signed [23:0] expected_scaled_sample;
+    integer midi_event_count = 0;
+    logic [23:0] last_midi_event = 24'd0;
+    integer stress_idx;
+    logic [7:0] stress_note;
     
     //BMP writer related signals    
     localparam BMP_WIDTH  = 800;
@@ -92,6 +97,17 @@ module hdmi_text_controller_tb();
        
     always begin : CLOCK_GENERATION
         #5 aclk = ~aclk;
+    end
+
+    always @(posedge aclk) begin
+        if (!arstn) begin
+            midi_event_count <= 0;
+            last_midi_event <= 24'd0;
+        end else if (hdmi_text_controller_v1_0_inst.midi_event_valid) begin
+            midi_event_count <= midi_event_count + 1;
+            last_midi_event <=
+                hdmi_text_controller_v1_0_inst.midi_event_packet;
+        end
     end
 
     // Hierarchical references to internal DUT signals
@@ -186,6 +202,48 @@ module hdmi_text_controller_tb();
             write_resp_ready <= 0;
         end
     endtask
+
+    task axi_write_staggered (
+        input logic [31:0] addr,
+        input logic [31:0] data,
+        input logic address_first
+    );
+        integer previous_event_count;
+        begin
+            previous_event_count = midi_event_count;
+            #3;
+            write_resp_ready <= 1'b1;
+            write_strb <= 4'hF;
+            if (address_first) begin
+                write_addr <= addr;
+                write_addr_valid <= 1'b1;
+                repeat (3) @(posedge aclk);
+                write_data <= data;
+                write_data_valid <= 1'b1;
+            end else begin
+                write_data <= data;
+                write_data_valid <= 1'b1;
+                repeat (3) @(posedge aclk);
+                write_addr <= addr;
+                write_addr_valid <= 1'b1;
+            end
+
+            wait (write_addr_ready && write_data_ready);
+            @(posedge aclk);
+            write_addr_valid <= 1'b0;
+            write_data_valid <= 1'b0;
+            write_strb <= 4'b0;
+            wait (write_resp_valid);
+            @(posedge aclk);
+            #1;
+            write_resp_ready <= 1'b0;
+            if (midi_event_count != previous_event_count + 1)
+                $fatal(1, "Staggered AXI MIDI write pushed %0d events, expected one",
+                       midi_event_count - previous_event_count);
+            if (last_midi_event !== data[23:0])
+                $fatal(1, "Staggered AXI MIDI packet mismatch: %x", last_midi_event);
+        end
+    endtask
     
     // AXI read task
     task axi_read (input logic [31:0] addr, output logic [31:0] data);
@@ -205,6 +263,15 @@ module hdmi_text_controller_tb();
         end
     endtask
 
+    task wait_midi_pipeline_empty;
+        begin
+            wait (hdmi_text_controller_v1_0_inst.midi_engine_instance.fifo_count == 0 &&
+                  !hdmi_text_controller_v1_0_inst.midi_engine_instance.pending_note_on &&
+                  !hdmi_text_controller_v1_0_inst.midi_engine_instance.allocation_stage_valid);
+            repeat (2) @(posedge aclk);
+        end
+    endtask
+
     // Test vectors
     initial begin: TEST_VECTORS
         arstn = 0;
@@ -218,6 +285,14 @@ module hdmi_text_controller_tb();
             axi_write(32'h08 + (reg_idx * 4), expected_tuning[reg_idx]);
         end
         axi_write(32'h28, 32'h000002A5);
+        axi_write_staggered(32'h2C, 32'h00903C64, 1'b1);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys[24] !== 1'b1)
+            $fatal(1, "MIDI note-on did not set the hardware piano key");
+        axi_write_staggered(32'h2C, 32'h00803C00, 1'b0);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys[24] !== 1'b0)
+            $fatal(1, "MIDI note-off did not clear the hardware piano key");
 
         axi_read(32'h00, tb_read);
         if (tb_read !== 32'h00000005)
@@ -233,6 +308,121 @@ module hdmi_text_controller_tb();
         axi_read(32'h28, tb_read);
         if (tb_read !== 32'h000002A5)
             $fatal(1, "voice control register readback mismatch: %x", tb_read);
+        axi_read(32'h2C, tb_read);
+        if (tb_read !== 32'h00803C00)
+            $fatal(1, "MIDI event register readback mismatch: %x", tb_read);
+        axi_read(32'h30, tb_read);
+        if (tb_read !== 32'h28991204)
+            $fatal(1, "ADSR configuration reset value mismatch: %x", tb_read);
+
+        force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick = 1'b1;
+        axi_write(32'h2C, 32'h00903C64);
+        repeat (100) @(posedge aclk);
+        env_level_after_100 =
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0];
+        if (env_level_after_100 == 0)
+            $fatal(1, "ADSR attack did not raise the envelope");
+        repeat (200) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] <=
+            env_level_after_100)
+            $fatal(1, "ADSR attack did not ramp upward");
+        repeat (11000) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] != 3'd3)
+            $fatal(1, "ADSR did not reach sustain after attack and decay");
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] < 16'd39000 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] > 16'd39600)
+            $fatal(1, "ADSR sustain level is outside the configured range");
+        @(negedge aclk);
+        expected_stage1_product =
+            $signed({{8{hdmi_text_controller_v1_0_inst.synth_instance.voice_sample_reg[0][15]}},
+                     hdmi_text_controller_v1_0_inst.synth_instance.voice_sample_reg[0]}) *
+            $signed({16'd0, 1'b0,
+                     hdmi_text_controller_v1_0_inst.synth_instance.voice_velocity_reg[0]});
+        expected_stage2_product =
+            $signed({{17{hdmi_text_controller_v1_0_inst.synth_instance.voice_velocity_product[0][23]}},
+                     hdmi_text_controller_v1_0_inst.synth_instance.voice_velocity_product[0]}) *
+            $signed({24'd0, 1'b0,
+                     hdmi_text_controller_v1_0_inst.synth_instance.stage1_envelope[0]});
+        expected_scaled_sample = expected_stage2_product >>> 23;
+        @(posedge aclk);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.synth_instance.voice_velocity_product[0] !==
+                expected_stage1_product ||
+            hdmi_text_controller_v1_0_inst.synth_instance.voice_scaled[0] !==
+                expected_scaled_sample)
+            $fatal(1, "Pipelined velocity/envelope scaling did not match the staged products");
+
+        axi_write(32'h2C, 32'h00803C00);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] == 3'd4);
+        env_level_after_100 =
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0];
+        repeat (19000) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] != 3'd4 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] == 0)
+            $fatal(1, "ADSR release ended before the configured 400 ms");
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] >=
+            env_level_after_100)
+            $fatal(1, "ADSR release did not fade the envelope");
+        repeat (1000) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] != 3'd0 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] != 0)
+            $fatal(1, "ADSR release did not reach idle at its configured duration");
+        release hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick;
+
+        repeat (4) @(posedge aclk);
+        for (stress_idx = 0; stress_idx < 8; stress_idx++) begin
+            stress_note = 8'd48 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd100});
+        end
+        wait_midi_pipeline_empty();
+        for (stress_idx = 4; stress_idx < 8; stress_idx++) begin
+            stress_note = 8'd48 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h80, stress_note, 8'd0});
+        end
+        wait_midi_pipeline_empty();
+        for (stress_idx = 0; stress_idx < 4; stress_idx++) begin
+            stress_note = 8'd56 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd100});
+        end
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
+            ((61'hF << 12) | (61'hF << 20)))
+            $fatal(1, "Allocator failed to prioritize release voices: %x",
+                   hdmi_text_controller_v1_0_inst.hw_active_keys);
+
+        for (stress_idx = 4; stress_idx < 12; stress_idx++) begin
+            stress_note = 8'd56 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd100});
+        end
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
+            (61'hFF << 24))
+            $fatal(1, "12-note burst did not retain the newest eight gated notes: %x",
+                   hdmi_text_controller_v1_0_inst.hw_active_keys);
+
+        axi_write(32'h2C, 32'h00B07B00);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 61'd0)
+            $fatal(1, "All Notes Off left hardware piano keys highlighted: %x",
+                   hdmi_text_controller_v1_0_inst.hw_active_keys);
+
+        axi_write(32'h2C, 32'h00901564);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== (61'h1 << 9))
+            $fatal(1, "A0 did not octave-fold to A2 (MIDI 45)");
+        axi_write(32'h2C, 32'h00801500);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 61'd0)
+            $fatal(1, "A0 Note Off did not release its folded A2 key");
+
+        axi_write(32'h2C, 32'h00906C64);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== (61'h1 << 60))
+            $fatal(1, "C8 did not octave-fold to C7 (MIDI 96)");
+        axi_write(32'h2C, 32'h00806C00);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 61'd0)
+            $fatal(1, "C8 Note Off did not release its folded C7 key");
 
         // Wait for a complete frame so the rendered keyboard can be saved.
         `ifdef SIM_VIDEO

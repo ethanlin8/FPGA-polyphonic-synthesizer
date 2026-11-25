@@ -1,6 +1,7 @@
 /* HID class support functions */
 
 #include <stdio.h>
+#include <string.h>
 #include "project_config.h"
 
 BYTE bigbuf[256];   //256 bytes
@@ -212,11 +213,12 @@ BYTE mousePoll(BOOT_MOUSE_REPORT* buf) {
 	return (rcode);
 }
 /* poll boot keyboard */
-BYTE kbdPoll(BOOT_KBD_REPORT* buf) {
+BYTE kbdPoll(BOOT_KBD_REPORT* buf, WORD* bytes_read) {
 	BYTE rcode;
+	memset(buf, 0, sizeof(*buf));
 	MAXreg_wr( rPERADDR, hid_device.addr);    //set peripheral address
-	rcode = XferInTransfer(hid_device.addr, 1, 8, (BYTE*) buf,
-			devtable[hid_device.addr].epinfo[1].MaxPktSize);
+	rcode = XferInTransferCount(hid_device.addr, 1, sizeof(*buf), (BYTE*) buf,
+			devtable[hid_device.addr].epinfo[1].MaxPktSize, bytes_read);
 	return (rcode);
 }
 BOOL HIDMEventHandler(BYTE address, BYTE event, void *data, DWORD size) {

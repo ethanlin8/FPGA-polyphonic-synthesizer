@@ -1,5 +1,9 @@
 create_clock -period 10.000 -name clk_100 -waveform {0.000 5.000} [get_ports Clk]
 
+# Cut only asynchronous paths into the first pixel-clock synchronizer stages.
+set_false_path -from [get_clocks clk_100] \
+    -to [get_cells -hier -filter {ASYNC_REG == TRUE && NAME =~ *sync1_reg*}]
+
 set_property IOSTANDARD LVCMOS33 [get_ports Clk]
 set_property IOSTANDARD LVCMOS25 [get_ports reset_rtl_0]
 set_property IOSTANDARD LVCMOS33 [get_ports uart_rtl_0_rxd]

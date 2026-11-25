@@ -10,6 +10,19 @@
 #include "usb_ch9.h"
 #include "transfer.h"
 #include "HID.h"
+#include "xparameters.h"
+
+#if defined(XPAR_TIMER_USB_AXI_CLOCK_FREQ_HZ)
+#define USB_TIMER_CLOCK_HZ XPAR_TIMER_USB_AXI_CLOCK_FREQ_HZ
+#elif defined(XPAR_TMRCTR_0_CLOCK_FREQ_HZ)
+#define USB_TIMER_CLOCK_HZ XPAR_TMRCTR_0_CLOCK_FREQ_HZ
+#elif defined(XPAR_CPU_CORE_CLOCK_FREQ_HZ)
+#define USB_TIMER_CLOCK_HZ XPAR_CPU_CORE_CLOCK_FREQ_HZ
+#else
+#define USB_TIMER_CLOCK_HZ 100000000U
+#endif
+
+#define USB_TIMER_TICKS_PER_MS (USB_TIMER_CLOCK_HZ / 1000U)
 
 /* USB constants */
 /* time in milliseconds */

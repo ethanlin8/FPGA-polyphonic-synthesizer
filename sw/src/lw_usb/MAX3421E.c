@@ -26,6 +26,7 @@ static int Status;
 static XGpio Gpio_rst;
 static XGpio Gpio_int;
 static XSpi_Config *ConfigPtr;	/* Pointer to Configuration data */
+static u8 timer_initialized;
 XTmrCtr Usb_timer;
 
 //Initialization of SPI port is already done for you
@@ -286,19 +287,26 @@ void MAX3421E_init(void) {
 	MAXreg_wr( rPINCTL, (bmFDUPSPI + bmINTLEVEL + bmGPXB)); //Full-duplex SPI, level interrupt, GPX
 	MAX3421E_reset();                                //stop/start the oscillator
 
-	//start USB timer
-	Status = XTmrCtr_Initialize(&Usb_timer, XPAR_TIMER_USB_AXI_DEVICE_ID);
-	if (Status != XST_SUCCESS) {
-			xil_printf ("Timer instantiation failed\n");
+	//start USB timer once and keep it running across USB reinitialization
+	if (!timer_initialized) {
+		Status = XTmrCtr_Initialize(&Usb_timer, XPAR_TMRCTR_0_DEVICE_ID);
+		if (Status != XST_SUCCESS) {
+			xil_printf("Timer instantiation failed\r\n");
+			return;
+		}
+		XTmrCtr_SetResetValue(&Usb_timer, 0, 0U);
+		XTmrCtr_SetOptions(&Usb_timer, 0, XTC_AUTO_RELOAD_OPTION);
+		XTmrCtr_Start(&Usb_timer, 0);
+		timer_initialized = 1;
 	}
-	XTmrCtr_Start(&Usb_timer, 0);
 
 	xil_printf ("The following should be about 1 second ticks. If they are not, check your timer \n");
 	//Test timer to make sure it is plausible
 	for (int i = 0; i < 3; i++)
 	{
 		u32 current = XTmrCtr_GetValue(&Usb_timer, 0);
-		while (XTmrCtr_GetValue(&Usb_timer, 0) - current < 100000000)
+		while ((u32)(XTmrCtr_GetValue(&Usb_timer, 0) - current) <
+		       USB_TIMER_CLOCK_HZ)
 		{
 
 		}

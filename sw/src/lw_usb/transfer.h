@@ -228,6 +228,8 @@ BYTE XferCtrlND(BYTE addr, BYTE ep, WORD nbytes, BYTE* dataptr, BOOL direction);
 BYTE XferDispatchPkt(BYTE token, BYTE ep);
 BYTE XferInTransfer(BYTE addr, BYTE ep, WORD nbytes, BYTE* data,
 		BYTE maxpktsize);
+BYTE XferInTransferCount(BYTE addr, BYTE ep, WORD nbytes, BYTE* data,
+		BYTE maxpktsize, WORD* bytes_read);
 //BYTE XferInTransfer_mps( BYTE ep, char* data, BYTE maxpktsize );
 void USB_init(void);
 void USB_Task(void);

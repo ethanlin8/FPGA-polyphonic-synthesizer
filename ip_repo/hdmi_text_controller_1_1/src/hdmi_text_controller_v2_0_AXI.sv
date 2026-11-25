@@ -47,6 +47,10 @@ module hdmi_text_controller_v2_0_AXI #
     output logic [255:0] tuning_words,
     output logic [7:0] voice_gate,
     output logic [1:0] wave_sel,
+    output logic wave_override_enable,
+    output logic midi_event_valid,
+    output logic [23:0] midi_event_packet,
+    output logic [31:0] adsr_config,
     // User ports ends
 
     // Global Clock Signal
@@ -133,7 +137,7 @@ localparam integer OPT_MEM_ADDR_BITS = 11;
 localparam integer NUM_WORDS = 1211;
 localparam integer PALETTE_ADDR = 12'h800;
 logic	 bram_rden;
-logic	 bram_wren;
+logic	 slv_reg_wren;
 logic [C_S_AXI_DATA_WIDTH-1:0]	 bram_data_out;
 integer	 byte_index;
 logic	 aw_en;
@@ -141,13 +145,19 @@ logic	 aw_en;
 logic    [OPT_MEM_ADDR_BITS-1:0] addra;
 logic    [C_S_AXI_DATA_WIDTH-1:0] douta;
 logic    [(C_S_AXI_DATA_WIDTH/8)-1:0] wea;
-logic [31:0] slv_regs [0:10];
+logic [31:0] slv_regs [0:12];
+logic [OPT_MEM_ADDR_BITS:0] axi_write_word_addr;
 
 assign active_keys = {slv_regs[1], slv_regs[0]};
 assign tuning_words = {slv_regs[9], slv_regs[8], slv_regs[7], slv_regs[6],
                        slv_regs[5], slv_regs[4], slv_regs[3], slv_regs[2]};
 assign voice_gate = slv_regs[10][7:0];
 assign wave_sel = slv_regs[10][9:8];
+assign wave_override_enable = slv_regs[10][10];
+assign adsr_config = slv_regs[12];
+assign midi_event_valid = slv_reg_wren && (axi_write_word_addr == 11) &&
+                          (S_AXI_WSTRB[2:0] == 3'b111);
+assign midi_event_packet = S_AXI_WDATA[23:0];
 
 // I/O Connections assignments
 
@@ -249,9 +259,9 @@ end
 // These registers are cleared when reset (active low) is applied.
 // Slave register write enable is asserted when valid address and data are available
 // and the slave is ready to accept the write address and write data.
-assign bram_wren = axi_wready && S_AXI_WVALID && axi_awready && S_AXI_AWVALID;
+assign slv_reg_wren = axi_awready && S_AXI_AWVALID &&
+                      axi_wready && S_AXI_WVALID;
 
-logic [OPT_MEM_ADDR_BITS:0] axi_write_word_addr;
 assign axi_write_word_addr = axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB];
 
 always_ff @( posedge S_AXI_ACLK )
@@ -261,7 +271,7 @@ begin
             palette_regs[i] <= '0;
         end
     end
-    else if (bram_wren && (axi_write_word_addr >= PALETTE_ADDR && axi_write_word_addr <= PALETTE_ADDR + 12'h007))
+    else if (slv_reg_wren && (axi_write_word_addr >= PALETTE_ADDR && axi_write_word_addr <= PALETTE_ADDR + 12'h007))
       begin
         for (byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1) begin
           if (S_AXI_WSTRB[byte_index]) begin
@@ -274,9 +284,12 @@ end
 always_ff @(posedge S_AXI_ACLK)
 begin
     if (S_AXI_ARESETN == 1'b0) begin
-        for (int reg_index = 0; reg_index < 11; reg_index = reg_index + 1)
+        for (int reg_index = 0; reg_index < 13; reg_index = reg_index + 1)
             slv_regs[reg_index] <= '0;
-    end else if (bram_wren && (axi_write_word_addr < 11)) begin
+        // ADSR times are in 10 ms units: 40 ms attack, 180 ms decay,
+        // 60% sustain, and 400 ms release.
+        slv_regs[12] <= 32'h28991204;
+    end else if (slv_reg_wren && (axi_write_word_addr < 13)) begin
         for (int reg_byte = 0; reg_byte < C_S_AXI_DATA_WIDTH/8; reg_byte = reg_byte + 1) begin
             if (S_AXI_WSTRB[reg_byte])
                 slv_regs[axi_write_word_addr[3:0]][(reg_byte*8) +: 8]
@@ -402,11 +415,13 @@ assign axi_read_word_addr = axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB];
 
 logic [C_S_AXI_DATA_WIDTH-1:0] current_DrawX;
 logic [C_S_AXI_DATA_WIDTH-1:0] current_DrawY;
+logic prev_vsync;
+logic [31:0] frame_counter;
 
 always_comb
 begin
       // Address decoding for reading registers
-     if (axi_read_word_addr < 11)
+     if (axi_read_word_addr < 13)
         bram_data_out = slv_regs[axi_read_word_addr[3:0]];
      else if (axi_read_word_addr >= PALETTE_ADDR && axi_read_word_addr <= PALETTE_ADDR + 12'h007)
         bram_data_out = palette_regs[axi_read_word_addr[2:0]];
@@ -442,9 +457,6 @@ end
 
 // Add user logic here
 
-logic prev_vsync;
-logic [31:0] frame_counter;
-
 always_ff @( posedge S_AXI_ACLK)
 begin
     if (S_AXI_ARESETN == 1'b0)
@@ -475,12 +487,12 @@ begin
     end
 end
 
-assign addra = bram_wren ? axi_write_word_addr : axi_read_word_addr;
-assign wea = (bram_wren && (axi_write_word_addr >= 11) &&
+assign addra = slv_reg_wren ? axi_write_word_addr : axi_read_word_addr;
+assign wea = (slv_reg_wren && (axi_write_word_addr >= 13) &&
               (axi_write_word_addr < NUM_WORDS)) ? S_AXI_WSTRB : 4'b0000;
 
 logic [10:0] bram_addr_offset;
-assign bram_addr_offset = bram_addr + 11'd11;
+assign bram_addr_offset = bram_addr + 11'd13;
 
 //Block Memory Module
 blk_mem_gen_0 bram (

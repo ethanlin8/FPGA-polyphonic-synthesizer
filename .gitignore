@@ -21,11 +21,12 @@ sw/workspace/
 *.log
 *.str
 *.dmp
+*.pb
 .Xil/
 *.bd
 *.bda
 *.bxml
-hw/**/bd/
+*.dcp
 
 # ==============================================================================
 # 3. Custom IP Packaging Temp Files (Keep component.xml, hdl/, xgui/, drivers/)
@@ -35,6 +36,7 @@ ip_repo/**/*.jou
 ip_repo/**/*.log
 ip_repo/**/.Xil/
 ip_repo/**/tmp_edit_project*
+ip_repo/**/example_designs/
 
 # ==============================================================================
 # 4. OS & Editor Files (macOS, Windows, VS Code, EWS)

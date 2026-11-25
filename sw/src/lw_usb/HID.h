@@ -1,7 +1,7 @@
 /* HID support header */
 
 #ifndef _HID_h_
-#define _HID_h
+#define _HID_h_
 
 /* HID device structure */
 typedef struct {
@@ -44,7 +44,7 @@ BOOL HIDMProbe(BYTE address, DWORD flags);
 BOOL HIDKProbe(BYTE address, DWORD flags);
 void HID_init(void);
 BYTE mousePoll(BOOT_MOUSE_REPORT* buf);
-BYTE kbdPoll(BOOT_KBD_REPORT* buf);
+BYTE kbdPoll(BOOT_KBD_REPORT* buf, WORD* bytes_read);
 BOOL HIDMEventHandler(BYTE addr, BYTE event, void *data, DWORD size);
 BOOL HIDKEventHandler(BYTE addr, BYTE event, void *data, DWORD size);
 #endif // _HID_h_
