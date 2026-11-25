@@ -42,15 +42,10 @@ if {$wns < 0.0 || $whs < 0.0} {
     puts "WARNING: Timing constraints were NOT met! (WNS=${wns} ns, WHS=${whs} ns)"
 }
 
-# Export .xsa ONLY if running Vivado 2022.2
-set vivado_ver [version -short]
-if {$vivado_ver eq "2022.2"} {
-    file mkdir ./export
-    set top_name [get_property top [current_fileset]]
-    write_hw_platform -fixed -include_bit -force -file ./export/${top_name}.xsa
-    puts "SUCCESS (Vivado $vivado_ver): Exported hardware to ./export/${top_name}.xsa"
-} else {
-    puts "INFO: Running Vivado $vivado_ver (non-2022.2). Skipping ./export/*.xsa overwrite."
-}
+# Export the local .xsa hardware handoff (including bitstream) to ./export/
+file mkdir ./export
+set top_name [get_property top [current_fileset]]
+write_hw_platform -fixed -include_bit -force -file ./export/${top_name}.xsa
+puts "SUCCESS: Exported local hardware handoff to ./export/${top_name}.xsa"
 
 close_project
