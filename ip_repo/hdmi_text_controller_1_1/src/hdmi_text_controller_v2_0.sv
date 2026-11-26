@@ -77,23 +77,28 @@ module hdmi_text_controller_v2_0 #
     (* ASYNC_REG = "TRUE" *) logic [31:0] adsr_config_sync2;
     (* ASYNC_REG = "TRUE" *) logic [4:0] firmware_status_sync1;
     (* ASYNC_REG = "TRUE" *) logic [4:0] firmware_status_sync2;
+    (* ASYNC_REG = "TRUE" *) logic [1:0] effect_status_sync1;
+    (* ASYNC_REG = "TRUE" *) logic [1:0] effect_status_sync2;
     logic [87:0] display_active_keys;
     logic [255:0] tuning_words;
     logic [7:0] voice_gate;
     logic [1:0] wave_sel;
     logic wave_override_enable;
+    logic echo_en;
     logic midi_event_valid;
     logic [23:0] midi_event_packet;
     logic [31:0] adsr_config;
     logic [255:0] engine_tuning_words;
     logic [55:0] velocity_words;
     logic [7:0] engine_voice_gate;
+    logic [7:0] voice_sustained;
     logic voice_clear;
     logic [7:0] voice_idle;
     logic [87:0] hw_active_keys;
     logic [1:0] engine_wave_sel;
     logic [1:0] selected_wave;
     logic [4:0] firmware_status;
+    logic sustain_pedal;
     logic [7:0] scope_sample;
     logic scope_sample_tick;
     (* ram_style = "block" *) logic [7:0] scope_ram [0:511];
@@ -132,6 +137,8 @@ module hdmi_text_controller_v2_0 #
             adsr_config_sync2 <= 32'h28991204;
             firmware_status_sync1 <= 0;
             firmware_status_sync2 <= 0;
+            effect_status_sync1 <= 0;
+            effect_status_sync2 <= 0;
             scope_valid_sync1 <= 0;
             scope_valid_sync2 <= 0;
         end else begin
@@ -147,6 +154,8 @@ module hdmi_text_controller_v2_0 #
             adsr_config_sync2 <= adsr_config_sync1;
             firmware_status_sync1 <= firmware_status;
             firmware_status_sync2 <= firmware_status_sync1;
+            effect_status_sync1 <= {echo_en, sustain_pedal};
+            effect_status_sync2 <= effect_status_sync1;
             scope_valid_sync1 <= scope_valid_frame;
             scope_valid_sync2 <= scope_valid_sync1;
         end
@@ -233,6 +242,7 @@ hdmi_text_controller_v2_0_AXI # (
     .voice_gate(voice_gate),
     .wave_sel(wave_sel),
     .wave_override_enable(wave_override_enable),
+    .echo_en(echo_en),
     .midi_event_valid(midi_event_valid),
     .midi_event_packet(midi_event_packet),
     .adsr_config(adsr_config),
@@ -307,6 +317,8 @@ hdmi_text_controller_v2_0_AXI # (
         .voice_gate(voice_gate_sync2),
         .adsr_config(adsr_config_sync2),
         .firmware_status(firmware_status_sync2),
+        .sustain_pedal(effect_status_sync2[0]),
+        .echo_en(effect_status_sync2[1]),
         .Red(red),
         .Green(green),
         .Blue(blue)
@@ -321,9 +333,11 @@ hdmi_text_controller_v2_0_AXI # (
         .tuning_words(engine_tuning_words),
         .velocity_words(velocity_words),
         .voice_gate(engine_voice_gate),
+        .voice_sustained(voice_sustained),
         .voice_clear(voice_clear),
         .hw_active_keys(hw_active_keys),
-        .wave_sel(engine_wave_sel)
+        .wave_sel(engine_wave_sel),
+        .sustain_pedal(sustain_pedal)
     );
 
     poly_synth_core synth_instance(
@@ -331,10 +345,12 @@ hdmi_text_controller_v2_0_AXI # (
         .Reset(reset_ah),
         .tuning_words(engine_tuning_words),
         .voice_gate(engine_voice_gate),
+        .voice_sustained(voice_sustained),
         .velocity_words(velocity_words),
         .voice_clear(voice_clear),
         .adsr_config(adsr_config),
         .wave_sel(selected_wave),
+        .echo_en(echo_en),
         .voice_idle(voice_idle),
         .scope_sample(scope_sample),
         .scope_sample_tick(scope_sample_tick),

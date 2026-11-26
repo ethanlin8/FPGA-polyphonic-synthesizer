@@ -48,6 +48,7 @@ module hdmi_text_controller_v2_0_AXI #
     output logic [7:0] voice_gate,
     output logic [1:0] wave_sel,
     output logic wave_override_enable,
+    output logic echo_en,
     output logic midi_event_valid,
     output logic [23:0] midi_event_packet,
     output logic [31:0] adsr_config,
@@ -155,6 +156,7 @@ assign tuning_words = {slv_regs[9], slv_regs[8], slv_regs[7], slv_regs[6],
 assign voice_gate = slv_regs[10][7:0];
 assign wave_sel = slv_regs[10][9:8];
 assign wave_override_enable = slv_regs[10][10];
+assign echo_en = slv_regs[10][11];
 assign adsr_config = slv_regs[12];
 assign firmware_status = slv_regs[13][4:0];
 assign midi_event_valid = slv_reg_wren && (axi_write_word_addr == 11) &&
@@ -288,8 +290,8 @@ begin
     if (S_AXI_ARESETN == 1'b0) begin
         for (int reg_index = 0; reg_index < 14; reg_index = reg_index + 1)
             slv_regs[reg_index] <= '0;
-        // ADSR times are in 10 ms units: 40 ms attack, 180 ms decay,
-        // 60% sustain, and 400 ms release.
+        // Attack is in milliseconds; decay and release are in 10 ms units.
+        // This default is 4 ms attack, 180 ms decay, 60% sustain, 400 ms release.
         slv_regs[12] <= 32'h28991204;
     end else if (slv_reg_wren && (axi_write_word_addr < 14)) begin
         for (int reg_byte = 0; reg_byte < C_S_AXI_DATA_WIDTH/8; reg_byte = reg_byte + 1) begin

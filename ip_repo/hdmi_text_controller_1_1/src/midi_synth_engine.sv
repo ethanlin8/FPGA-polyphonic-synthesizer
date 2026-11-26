@@ -7,9 +7,11 @@ module midi_synth_engine (
     output logic [255:0] tuning_words,
     output logic [55:0]  velocity_words,
     output logic [7:0]   voice_gate,
+    output logic [7:0]   voice_sustained,
     output logic         voice_clear,
     output logic [87:0]  hw_active_keys,
-    output logic [1:0]   wave_sel
+    output logic [1:0]   wave_sel,
+    output logic         sustain_pedal
 );
 
     localparam integer NUM_VOICES = 8;
@@ -24,12 +26,14 @@ module midi_synth_engine (
     logic allocation_stage_valid;
     logic [7:0] allocation_idle_mask;
     logic [7:0] allocation_release_mask;
+    logic [7:0] allocation_sustain_mask;
     logic [7:0] allocation_active_mask;
     logic [6:0] allocation_note;
     logic [6:0] allocation_velocity;
     logic [7:0] age_older_comb [0:7];
     logic [7:0] age_older_stage [0:7];
     logic [7:0] release_oldest_mask;
+    logic [7:0] sustain_oldest_mask;
     logic [7:0] active_oldest_mask;
     logic [2:0] selected_voice_next;
     logic selected_voice_valid;
@@ -45,6 +49,9 @@ module midi_synth_engine (
     logic [7:0] voice_assigned;
     logic [7:0] voice_key_down;
     logic [7:0] voice_gate_retrigger;
+    logic [11:0] sustain_ms [0:7];
+    logic [16:0] ms_counter;
+    logic ms_tick;
     logic [31:0] age_counter;
     logic [13:0] pitch_bend;
     logic signed [14:0] pitch_delta;
@@ -54,8 +61,13 @@ module midi_synth_engine (
     logic [48:0] pitch_product_sum [0:7];
     logic [31:0] tuning_word_reg [0:7];
     logic [6:0] folded_note;
+    logic [7:0] sustained_match_mask;
+    logic sustained_match_valid;
+    logic [2:0] sustained_match_voice;
 
     integer voice;
+
+    assign ms_tick = (ms_counter == 17'd99999);
 
     function automatic logic [31:0] note_tuning(input logic [6:0] note_index);
         begin
@@ -184,7 +196,11 @@ module midi_synth_engine (
         selected_voice_next = 3'd0;
         selected_voice_valid = 1'b0;
         release_oldest_mask = 8'd0;
+        sustain_oldest_mask = 8'd0;
         active_oldest_mask = 8'd0;
+        sustained_match_mask = 8'd0;
+        sustained_match_valid = 1'b0;
+        sustained_match_voice = 3'd0;
 
         for (int i = 0; i < 8; i++)
             age_older_comb[i] = 8'd0;
@@ -213,6 +229,13 @@ module midi_synth_engine (
                         release_oldest_mask[i] = 1'b0;
                 end
             end
+            if (allocation_sustain_mask[i]) begin
+                sustain_oldest_mask[i] = 1'b1;
+                for (int j = 0; j < 8; j++) begin
+                    if (allocation_sustain_mask[j] && age_older_stage[j][i])
+                        sustain_oldest_mask[i] = 1'b0;
+                end
+            end
             if (allocation_active_mask[i]) begin
                 active_oldest_mask[i] = 1'b1;
                 for (int j = 0; j < 8; j++) begin
@@ -222,9 +245,32 @@ module midi_synth_engine (
             end
         end
 
+        if (fifo_count != 0 && fifo_event[23:20] == 4'h9 &&
+            fifo_event[7:0] != 0) begin
+            for (int i = 0; i < 8; i++) begin
+                if (voice_assigned[i] && voice_sustained[i] &&
+                    voice_note[i] == folded_note) begin
+                    sustained_match_mask[i] = 1'b1;
+                    if (!sustained_match_valid) begin
+                        sustained_match_valid = 1'b1;
+                        sustained_match_voice = i[2:0];
+                    end
+                end
+            end
+        end
+
         if (!selected_voice_valid) begin
             for (int i = 0; i < 8; i++) begin
                 if (release_oldest_mask[i] && !selected_voice_valid) begin
+                    selected_voice_next = i[2:0];
+                    selected_voice_valid = 1'b1;
+                end
+            end
+        end
+
+        if (!selected_voice_valid) begin
+            for (int i = 0; i < 8; i++) begin
+                if (sustain_oldest_mask[i] && !selected_voice_valid) begin
                     selected_voice_next = i[2:0];
                     selected_voice_valid = 1'b1;
                 end
@@ -249,12 +295,13 @@ module midi_synth_engine (
         pitch_factor = 17'd65536 + pitch_delta;
         tuning_words = '0;
         velocity_words = '0;
-        voice_gate = voice_key_down & ~voice_gate_retrigger;
+        voice_gate = (voice_key_down | voice_sustained) & ~voice_gate_retrigger;
         hw_active_keys = '0;
         for (int i = 0; i < 8; i++) begin
             tuning_words[i*32 +: 32] = tuning_word_reg[i];
             velocity_words[i*7 +: 7] = voice_velocity[i];
-            if (voice_gate[i] && voice_note[i] >= 7'd21 &&
+            if (voice_gate[i] && !voice_sustained[i] &&
+                voice_note[i] >= 7'd21 &&
                 voice_note[i] <= 7'd108)
                 hw_active_keys[voice_note[i] - 7'd21] = 1'b1;
         end
@@ -269,6 +316,7 @@ module midi_synth_engine (
             allocation_stage_valid <= 0;
             allocation_idle_mask <= 0;
             allocation_release_mask <= 0;
+            allocation_sustain_mask <= 0;
             allocation_active_mask <= 0;
             allocation_note <= 0;
             allocation_velocity <= 0;
@@ -281,7 +329,10 @@ module midi_synth_engine (
             pending_note_on <= 0;
             voice_assigned <= 0;
             voice_key_down <= 0;
+            voice_sustained <= 0;
             voice_gate_retrigger <= 0;
+            sustain_pedal <= 0;
+            ms_counter <= 0;
             for (voice = 0; voice < 8; voice++) begin
                 voice_note[voice] <= 0;
                 voice_age[voice] <= 0;
@@ -292,8 +343,14 @@ module midi_synth_engine (
                 pitch_high_product[voice] <= 0;
                 pitch_product_sum[voice] <= 0;
                 tuning_word_reg[voice] <= 0;
+                sustain_ms[voice] <= 0;
             end
         end else begin
+            if (ms_tick)
+                ms_counter <= 0;
+            else
+                ms_counter <= ms_counter + 1'b1;
+
             voice_clear <= 0;
             voice_gate_retrigger <= 0;
             allocation_stage_valid <= 0;
@@ -301,9 +358,10 @@ module midi_synth_engine (
 
             if (pending_note_on) begin
                 voice_assigned[pending_voice] <= 1;
-                if (voice_key_down[pending_voice])
+                if (voice_gate[pending_voice])
                     voice_gate_retrigger[pending_voice] <= 1;
                 voice_key_down[pending_voice] <= 1;
+                voice_sustained[pending_voice] <= 0;
                 voice_note[pending_voice] <= pending_note;
                 base_tuning[pending_voice] <=
                     note_tuning(pending_note - 7'd21);
@@ -350,6 +408,19 @@ module midi_synth_engine (
                     base_tuning[voice] <= 0;
                     voice_velocity[voice] <= 0;
                 end
+
+                if (pending_note_on && (voice == pending_voice)) begin
+                    sustain_ms[voice] <= 0;
+                end else if (!voice_sustained[voice]) begin
+                    sustain_ms[voice] <= 0;
+                end else if (voice_idle[voice] ||
+                             sustain_ms[voice] >= 12'd1100) begin
+                    voice_sustained[voice] <= 0;
+                    voice_key_down[voice] <= 0;
+                    sustain_ms[voice] <= 0;
+                end else if (ms_tick) begin
+                    sustain_ms[voice] <= sustain_ms[voice] + 1'b1;
+                end
             end
 
             if (fifo_pop) begin
@@ -360,41 +431,91 @@ module midi_synth_engine (
                             for (voice = 0; voice < 8; voice++) begin
                                 if (voice_assigned[voice] &&
                                     voice_note[voice] == folded_note) begin
-                                    voice_key_down[voice] <= 0;
+                                    if (sustain_pedal) begin
+                                        voice_key_down[voice] <= 0;
+                                        voice_sustained[voice] <= 1;
+                                    end else begin
+                                        voice_key_down[voice] <= 0;
+                                        voice_sustained[voice] <= 0;
+                                    end
                                 end
                             end
                         end else begin
-                            allocation_stage_valid <= 1;
-                            allocation_idle_mask <= voice_idle & ~voice_key_down;
-                            allocation_note <= folded_note;
-                            allocation_velocity <= fifo_event[6:0];
-                            for (voice = 0; voice < 8; voice++) begin
-                                allocation_release_mask[voice] <=
-                                    voice_assigned[voice] &&
-                                    !voice_gate[voice] &&
-                                    !voice_gate_retrigger[voice];
-                                allocation_active_mask[voice] <=
-                                    voice_assigned[voice] &&
-                                    (voice_gate[voice] ||
-                                     voice_gate_retrigger[voice]);
-                                age_older_stage[voice] <= age_older_comb[voice];
+                            if (sustained_match_valid) begin
+                                pending_note_on <= 1;
+                                pending_voice <= sustained_match_voice;
+                                pending_note <= folded_note;
+                                pending_velocity <= fifo_event[6:0];
+                            end else begin
+                                allocation_stage_valid <= 1;
+                                allocation_idle_mask <=
+                                    voice_idle & ~voice_key_down & ~voice_sustained;
+                                allocation_note <= folded_note;
+                                allocation_velocity <= fifo_event[6:0];
+                                for (voice = 0; voice < 8; voice++) begin
+                                    allocation_release_mask[voice] <=
+                                        voice_assigned[voice] &&
+                                        !voice_gate[voice] &&
+                                        !voice_gate_retrigger[voice];
+                                    allocation_sustain_mask[voice] <=
+                                        voice_assigned[voice] && voice_sustained[voice];
+                                    allocation_active_mask[voice] <=
+                                        voice_assigned[voice] && voice_gate[voice] &&
+                                        !voice_sustained[voice];
+                                    age_older_stage[voice] <= age_older_comb[voice];
+                                end
                             end
                         end
                     end
                     4'hB: begin
-                        if (fifo_event[15:8] == 8'd120 ||
-                            fifo_event[15:8] == 8'd123) begin
+                        if (fifo_event[15:8] == 8'd64) begin
+                            if (fifo_event[7:0] >= 8'd64)
+                                sustain_pedal <= 1'b1;
+                            else begin
+                                sustain_pedal <= 1'b0;
+                                for (voice = 0; voice < 8; voice++) begin
+                                    if (voice_sustained[voice]) begin
+                                        voice_sustained[voice] <= 1'b0;
+                                        voice_key_down[voice] <= 1'b0;
+                                    end
+                                end
+                            end
+                        end else if (fifo_event[15:8] == 8'd121) begin
+                            sustain_pedal <= 1'b0;
+                            for (voice = 0; voice < 8; voice++) begin
+                                if (voice_sustained[voice]) begin
+                                    voice_sustained[voice] <= 1'b0;
+                                    voice_key_down[voice] <= 1'b0;
+                                end
+                            end
+                        end else if (fifo_event[15:8] == 8'd120 ||
+                                     fifo_event[15:8] == 8'd123) begin
                             voice_clear <= 1;
+                            sustain_pedal <= 1'b0;
                             voice_assigned <= 0;
                             voice_key_down <= 0;
+                            voice_sustained <= 0;
                             for (voice = 0; voice < 8; voice++) begin
                                 base_tuning[voice] <= 0;
                                 voice_velocity[voice] <= 0;
                             end
                         end
                     end
-                    4'hC: wave_sel <= fifo_event[15:8] % 3;
+                    4'hC: wave_sel <= fifo_event[9:8];
                     4'hE: pitch_bend <= {fifo_event[6:0], fifo_event[14:8]};
+                    4'hF: begin
+                        if (fifo_event[23:16] == 8'hFF) begin
+                            voice_clear <= 1;
+                            sustain_pedal <= 0;
+                            voice_assigned <= 0;
+                            voice_key_down <= 0;
+                            voice_sustained <= 0;
+                            for (voice = 0; voice < 8; voice++) begin
+                                base_tuning[voice] <= 0;
+                                voice_velocity[voice] <= 0;
+                            end
+                        end
+                    end
                     default: begin
                     end
                 endcase

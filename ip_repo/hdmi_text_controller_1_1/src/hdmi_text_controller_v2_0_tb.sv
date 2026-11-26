@@ -42,6 +42,10 @@ module hdmi_text_controller_tb();
     logic [31:0] tb_read;
     logic [31:0] expected_tuning [0:7];
     logic [15:0] env_level_after_100;
+    logic [31:0] sustain_env_q16_before;
+    logic [31:0] sustain_env_q16_after;
+    logic [31:0] expected_sustain_bleed;
+    logic [33:0] expected_sustain_bleed_wide;
     logic signed [23:0] expected_stage1_product;
     logic signed [40:0] expected_stage2_product;
     logic signed [23:0] expected_scaled_sample;
@@ -272,11 +276,157 @@ module hdmi_text_controller_tb();
         end
     endtask
 
+    task check_piano_wave;
+        logic signed [15:0] expected_sample;
+        longint signed expected_sum;
+        begin
+            wait (!hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0]);
+            expected_sum =
+                $signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h20]) +
+                ($signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h40]) >>> 2) +
+                ($signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h60]) >>> 3);
+            expected_sample = expected_sum >>> 1;
+
+            force hdmi_text_controller_v1_0_inst.synth_instance.voice_clear = 1'b0;
+            force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick =
+                1'b0;
+            @(negedge aclk);
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] = 3'd1;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_phase_latch[0] =
+                32'h20408000;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_sustained_latch[0] =
+                1'b0;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_stage[0] = 0;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0] = 1;
+            if (!hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0])
+                $fatal(1, "Piano harmonic pipeline did not start");
+            repeat (3) begin
+                @(posedge aclk);
+                #1;
+            end
+            if (!hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0])
+                $fatal(1, "Piano harmonic pipeline bypassed its registered stages");
+            @(posedge aclk);
+            #1;
+            if (hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0])
+                $fatal(1, "Piano harmonic pipeline did not complete");
+            if (hdmi_text_controller_v1_0_inst.synth_instance.piano_wave_sample[0] !==
+                expected_sample) begin
+                $fatal(1, "Piano sine partial sum produced %0d, expected %0d",
+                       hdmi_text_controller_v1_0_inst.synth_instance.piano_wave_sample[0],
+                       expected_sample);
+            end
+
+            expected_sum =
+                $signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h20]) +
+                ($signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h40]) >>> 3) +
+                ($signed(hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h60]) >>> 4);
+            expected_sample = expected_sum >>> 1;
+            @(negedge aclk);
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_sustained_latch[0] =
+                1'b1;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_stage[0] = 0;
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_calc_active[0] = 1;
+            repeat (4) begin
+                @(posedge aclk);
+                #1;
+            end
+            if (hdmi_text_controller_v1_0_inst.synth_instance.piano_wave_sample[0] !==
+                expected_sample)
+                $fatal(1, "Sustained Piano harmonics were not thinned by one bit");
+            hdmi_text_controller_v1_0_inst.synth_instance.piano_sustained_latch[0] =
+                1'b0;
+            release hdmi_text_controller_v1_0_inst.synth_instance.voice_clear;
+            release hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick;
+        end
+    endtask
+
+    task check_echo_decay (
+        input logic signed [15:0] initial_sample
+    );
+        logic signed [15:0] expected_sample;
+        logic signed [15:0] feedback_term;
+        logic signed [16:0] magnitude;
+        integer decay_step;
+        begin
+            wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_ready);
+            @(negedge aclk);
+            hdmi_text_controller_v1_0_inst.synth_instance.echo_ram[0] =
+                initial_sample;
+            expected_sample = initial_sample;
+            force hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy = 1'b0;
+            force hdmi_text_controller_v1_0_inst.synth_instance.echo_pending_addr = 12'd0;
+            force hdmi_text_controller_v1_0_inst.synth_instance.echo_pending_mixed =
+                16'sd0;
+
+            for (decay_step = 0; decay_step < 6 && expected_sample != 0;
+                 decay_step++) begin
+                if (expected_sample > -16'sd16 &&
+                    expected_sample < 16'sd16)
+                    feedback_term = 16'sd0;
+                else if (expected_sample >= 0)
+                    feedback_term = expected_sample >>> 2;
+                else begin
+                    magnitude = -$signed({expected_sample[15], expected_sample});
+                    feedback_term = -$signed(magnitude >>> 2);
+                end
+
+                force hdmi_text_controller_v1_0_inst.synth_instance.echo_pending =
+                    1'b1;
+                force hdmi_text_controller_v1_0_inst.synth_instance.echo_read_data =
+                    expected_sample;
+                @(posedge aclk);
+                #1;
+                force hdmi_text_controller_v1_0_inst.synth_instance.echo_pending =
+                    1'b0;
+                @(posedge aclk);
+                #1;
+                if (hdmi_text_controller_v1_0_inst.synth_instance.echo_ram[0] !==
+                    feedback_term)
+                    $fatal(1, "Echo feedback step %0d produced %0d, expected %0d",
+                           decay_step,
+                           hdmi_text_controller_v1_0_inst.synth_instance.echo_ram[0],
+                           feedback_term);
+                expected_sample = feedback_term;
+                @(negedge aclk);
+            end
+
+            if (expected_sample !== 16'sd0)
+                $fatal(1, "Echo feedback left a nonzero residual: %0d",
+                       expected_sample);
+
+            force hdmi_text_controller_v1_0_inst.synth_instance.dac_sample = 16'sd0;
+            force hdmi_text_controller_v1_0_inst.synth_instance.echo_read_data =
+                -16'sd15;
+            #1;
+            if (hdmi_text_controller_v1_0_inst.synth_instance.echo_wet_sample !==
+                16'sd0)
+                $fatal(1, "Negative echo wet deadband did not return exact zero");
+
+            release hdmi_text_controller_v1_0_inst.synth_instance.echo_read_data;
+            release hdmi_text_controller_v1_0_inst.synth_instance.echo_pending;
+            release hdmi_text_controller_v1_0_inst.synth_instance.echo_pending_addr;
+            release hdmi_text_controller_v1_0_inst.synth_instance.echo_pending_mixed;
+            release hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy;
+            release hdmi_text_controller_v1_0_inst.synth_instance.dac_sample;
+        end
+    endtask
+
     // Test vectors
     initial begin: TEST_VECTORS
         arstn = 0;
         repeat (4) @(posedge aclk);
         arstn <= 1;
+        wait (hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_tick);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_counter !==
+            17'd99999)
+            $fatal(1, "Shared millisecond tick did not occur at 100,000 clocks");
+        @(posedge aclk);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_tick !== 1'b0 ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_counter !== 17'd0)
+            $fatal(1, "Shared millisecond tick did not pulse for exactly one clock");
 
         axi_write(32'h00, 32'h00000005);
         axi_write(32'h04, 32'h00000001);
@@ -400,7 +550,7 @@ module hdmi_text_controller_tb();
         end
         wait_midi_pipeline_empty();
         if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
-            (88'hFF << 35))
+            (88'hFF << 39))
             $fatal(1, "12-note burst did not retain the newest eight gated notes: %x",
                    hdmi_text_controller_v1_0_inst.hw_active_keys);
 
@@ -427,6 +577,230 @@ module hdmi_text_controller_tb();
         repeat (4) @(posedge aclk);
         if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0)
             $fatal(1, "C8 Note Off did not release its native key");
+
+        axi_write(32'h2C, 32'h00C00300);
+        repeat (4) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.engine_wave_sel !== 2'd3)
+            $fatal(1, "MIDI Program Change 3 did not select Piano");
+
+        axi_write(32'h2C, 32'h00903C64);
+        wait_midi_pipeline_empty();
+        hdmi_text_controller_v1_0_inst.synth_instance.phase_acc[0] =
+            32'h20408000;
+        #1;
+        if (hdmi_text_controller_v1_0_inst.synth_instance.voice_wave[0] ===
+            hdmi_text_controller_v1_0_inst.synth_instance.sine_rom[8'h20])
+            $fatal(1, "Piano mode did not add its harmonic components");
+        check_piano_wave();
+        axi_write(32'h2C, 32'h00B0407F);
+        axi_write(32'h2C, 32'h00803C00);
+        wait_midi_pipeline_empty();
+        if (!hdmi_text_controller_v1_0_inst.sustain_pedal ||
+            hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0 ||
+            hdmi_text_controller_v1_0_inst.engine_voice_gate !== 8'h01 ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained !==
+                8'h01)
+            $fatal(1, "Sustained note did not ring while its visual key cleared");
+        axi_write(32'h2C, 32'h00903C50);
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.engine_voice_gate !== 8'h01)
+            $fatal(1, "Re-striking a sustained pitch allocated a duplicate voice");
+        axi_write(32'h2C, 32'h00803C00);
+        axi_write(32'h2C, 32'h00B04000);
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.sustain_pedal ||
+            hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0)
+            $fatal(1, "Releasing the sustain pedal left a note gated");
+
+        axi_write(32'h2C, 32'h00B0407F);
+        for (stress_idx = 0; stress_idx < 8; stress_idx++) begin
+            stress_note = 8'd48 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd100});
+        end
+        wait_midi_pipeline_empty();
+        for (stress_idx = 0; stress_idx < 8; stress_idx++) begin
+            stress_note = 8'd48 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h80, stress_note, 8'd0});
+        end
+        wait_midi_pipeline_empty();
+        axi_write(32'h2C, 32'h00903864);
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !==
+                (88'h1 << 35) ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained !==
+                8'hFE ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_note[0] !==
+                7'd56)
+            $fatal(1, "Allocator did not steal the oldest damper-sustained voice: keys=%h gate=%h sustained=%h assigned=%h",
+                   hdmi_text_controller_v1_0_inst.hw_active_keys,
+                   hdmi_text_controller_v1_0_inst.engine_voice_gate,
+                   hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained,
+                   hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_assigned);
+        axi_write(32'h2C, 32'h00B07B00);
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.hw_active_keys !== 88'd0)
+            $fatal(1, "All Notes Off did not clear damper-sustained voices");
+
+        axi_write(32'h30, 32'h01FF0101);
+        force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick = 1'b1;
+        axi_write(32'h2C, 32'h00903C7F);
+        wait_midi_pipeline_empty();
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] == 3'd3);
+        axi_write(32'h2C, 32'h00B0407F);
+        axi_write(32'h2C, 32'h00803C00);
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.engine_voice_gate[0] !== 1'b1 ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained[0] !==
+                1'b1)
+            $fatal(1, "Timeout test note was not held by the sustain pedal");
+        force hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_tick = 1'b1;
+        wait (hdmi_text_controller_v1_0_inst.midi_engine_instance.sustain_ms[0] ==
+              12'd1100);
+        repeat (2) @(posedge aclk);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.engine_voice_gate[0] !== 1'b0 ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained[0] !==
+                1'b0 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] !== 3'd4)
+            $fatal(1, "Sustained voice did not time out into its ADSR release");
+        release hdmi_text_controller_v1_0_inst.midi_engine_instance.ms_tick;
+        axi_write(32'h2C, 32'h00B07B00);
+        wait_midi_pipeline_empty();
+        axi_write(32'h30, 32'h01000101);
+        axi_write(32'h2C, 32'h00C00300);
+        axi_write(32'h2C, 32'h00B0407F);
+        axi_write(32'h2C, 32'h00903C7F);
+        wait_midi_pipeline_empty();
+        axi_write(32'h2C, 32'h00803C00);
+        wait_midi_pipeline_empty();
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] == 3'd3 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] == 0);
+        wait (hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained[0] ==
+              1'b0);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.engine_voice_gate[0] !== 1'b0 ||
+            hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_assigned[0] !==
+                1'b0)
+            $fatal(1, "Silent piano voice was not reclaimed at zero envelope");
+        release hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick;
+        force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick =
+            1'b1;
+        axi_write(32'h30, 32'h010A800B);
+        axi_write(32'h2C, 32'h00B07B00);
+        wait_midi_pipeline_empty();
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[1] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[2] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[3] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[4] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[5] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[6] == 3'd0 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[7] == 3'd0);
+        axi_write(32'h2C, 32'h00B0407F);
+        for (stress_idx = 0; stress_idx < 3; stress_idx++) begin
+            stress_note = 8'd60 + stress_idx * 4;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd127});
+        end
+        wait_midi_pipeline_empty();
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[0] == 3'd3 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[1] == 3'd3 &&
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_state[2] == 3'd3);
+        for (stress_idx = 0; stress_idx < 3; stress_idx++) begin
+            stress_note = 8'd60 + stress_idx * 4;
+            axi_write(32'h2C, {8'h00, 8'h80, stress_note, 8'd0});
+        end
+        wait_midi_pipeline_empty();
+        if (hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained[2:0] !==
+            3'b111)
+            $fatal(1, "Sustain pedal did not hold the test chord");
+
+        expected_sustain_bleed_wide =
+            ({2'b00,
+              hdmi_text_controller_v1_0_inst.synth_instance.envelope_step_q16[0]} << 1) +
+            {2'b00,
+             hdmi_text_controller_v1_0_inst.synth_instance.envelope_step_q16[0]};
+        expected_sustain_bleed =
+            (|expected_sustain_bleed_wide[33:32]) ?
+            32'hFFFFFFFF : expected_sustain_bleed_wide[31:0];
+        if (hdmi_text_controller_v1_0_inst.synth_instance.sustain_bleed_step[0] !==
+            expected_sustain_bleed)
+            $fatal(1, "Damper bleed step was not saturated at exactly 3x");
+        sustain_env_q16_before = {
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0],
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_fraction[0]
+        };
+        @(posedge aclk);
+        #1;
+        sustain_env_q16_after = {
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0],
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_fraction[0]
+        };
+        if ((sustain_env_q16_before - sustain_env_q16_after) !==
+            expected_sustain_bleed)
+            $fatal(1, "Damper bleed made a discontinuous envelope step");
+
+        axi_write(32'h2C, 32'h0090487F);
+        wait_midi_pipeline_empty();
+        repeat (600) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.midi_engine_instance.voice_sustained[2:0] !==
+                3'b111 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[3] <=
+                hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[0] ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[3] <=
+                hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[1] ||
+            hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[3] <=
+                hdmi_text_controller_v1_0_inst.synth_instance.envelope_level[2])
+            $fatal(1, "Foreground melody did not rise above the sustained chord");
+        axi_write(32'h2C, 32'h00B07B00);
+        wait_midi_pipeline_empty();
+        release hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick;
+        axi_write(32'h30, 32'h28991204);
+
+        axi_write(32'h2C, 32'h00C00200);
+        axi_write(32'h30, 32'h0101FF01);
+        for (stress_idx = 0; stress_idx < 8; stress_idx++) begin
+            stress_note = 8'd48 + stress_idx;
+            axi_write(32'h2C, {8'h00, 8'h90, stress_note, 8'd127});
+        end
+        wait_midi_pipeline_empty();
+        repeat (110000) @(posedge aclk);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.dac_sample >
+                16'sd24575 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.dac_sample <
+                -16'sd24576 ||
+            hdmi_text_controller_v1_0_inst.synth_instance.dac_sample ==
+                16'sh7FFF ||
+            hdmi_text_controller_v1_0_inst.synth_instance.dac_sample ==
+                16'sh8000)
+            $fatal(1, "Eight-note full-velocity chord clipped at the DAC input");
+        axi_write(32'h2C, 32'h00B07B00);
+        wait_midi_pipeline_empty();
+        axi_write(32'h30, 32'h28991204);
+
+        axi_write(32'h28, 32'h00000800);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_ready);
+        force hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick = 1'b1;
+        force hdmi_text_controller_v1_0_inst.synth_instance.dac_sample = 16'sd1000;
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_ptr == 12'd1);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_ptr == 12'd0);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_ptr == 12'd1);
+        @(posedge aclk);
+        #1;
+        if (hdmi_text_controller_v1_0_inst.synth_instance.echo_wet_sample !== 16'sd1500)
+            $fatal(1, "Echo did not return the delayed sample at the ring-buffer boundary");
+        release hdmi_text_controller_v1_0_inst.synth_instance.envelope_sample_tick;
+        release hdmi_text_controller_v1_0_inst.synth_instance.dac_sample;
+        axi_write(32'h28, 32'h00000000);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy);
+        wait (!hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy);
+        if (hdmi_text_controller_v1_0_inst.synth_instance.echo_ram[0] !== 16'sd0)
+            $fatal(1, "Disabling echo did not clear its stale sample memory");
+        axi_write(32'h28, 32'h00000800);
+        check_echo_decay(16'sd1000);
+        check_echo_decay(-16'sd1000);
+        axi_write(32'h28, 32'h00000000);
+        wait (hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy);
+        wait (!hdmi_text_controller_v1_0_inst.synth_instance.echo_clear_busy);
 
         // Wait for a complete frame so the rendered keyboard can be saved.
         `ifdef SIM_VIDEO

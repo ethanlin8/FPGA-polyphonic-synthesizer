@@ -9,6 +9,8 @@ module piano_mapper (
     input  logic [7:0]  scope_previous_sample,
     input  logic        scope_valid,
     input  logic [1:0]  wave_sel,
+    input logic        sustain_pedal,
+    input logic        echo_en,
     input  logic [7:0]  voice_gate,
     input  logic [31:0] adsr_config,
     input  logic [4:0]  firmware_status,
@@ -101,6 +103,7 @@ module piano_mapper (
                 "D": case (row) 0: font_row=3'b110; 1: font_row=3'b101; 2: font_row=3'b101; 3: font_row=3'b101; 4: font_row=3'b110; endcase
                 "E": case (row) 0: font_row=3'b111; 1: font_row=3'b100; 2: font_row=3'b110; 3: font_row=3'b100; 4: font_row=3'b111; endcase
                 "G": case (row) 0: font_row=3'b111; 1: font_row=3'b100; 2: font_row=3'b101; 3: font_row=3'b101; 4: font_row=3'b111; endcase
+                "H": case (row) 0: font_row=3'b101; 1: font_row=3'b101; 2: font_row=3'b111; 3: font_row=3'b101; 4: font_row=3'b101; endcase
                 "I": case (row) 0: font_row=3'b111; 1: font_row=3'b010; 2: font_row=3'b010; 3: font_row=3'b010; 4: font_row=3'b111; endcase
                 "L": case (row) 0: font_row=3'b100; 1: font_row=3'b100; 2: font_row=3'b100; 3: font_row=3'b100; 4: font_row=3'b111; endcase
                 "N": case (row) 0: font_row=3'b101; 1: font_row=3'b111; 2: font_row=3'b111; 3: font_row=3'b111; 4: font_row=3'b101; endcase
@@ -110,6 +113,7 @@ module piano_mapper (
                 "R": case (row) 0: font_row=3'b110; 1: font_row=3'b101; 2: font_row=3'b110; 3: font_row=3'b101; 4: font_row=3'b101; endcase
                 "S": case (row) 0: font_row=3'b111; 1: font_row=3'b100; 2: font_row=3'b111; 3: font_row=3'b001; 4: font_row=3'b111; endcase
                 "T": case (row) 0: font_row=3'b111; 1: font_row=3'b010; 2: font_row=3'b010; 3: font_row=3'b010; 4: font_row=3'b010; endcase
+                "U": case (row) 0: font_row=3'b101; 1: font_row=3'b101; 2: font_row=3'b101; 3: font_row=3'b101; 4: font_row=3'b111; endcase
                 "V": case (row) 0: font_row=3'b101; 1: font_row=3'b101; 2: font_row=3'b101; 3: font_row=3'b101; 4: font_row=3'b010; endcase
                 "W": case (row) 0: font_row=3'b101; 1: font_row=3'b101; 2: font_row=3'b111; 3: font_row=3'b111; 4: font_row=3'b101; endcase
                 "Y": case (row) 0: font_row=3'b101; 1: font_row=3'b101; 2: font_row=3'b010; 3: font_row=3'b010; 4: font_row=3'b010; endcase
@@ -218,7 +222,7 @@ module piano_mapper (
                     default: text_character = 0;
                 endcase
             end else if ((DrawY >= 10'd12) && (DrawY < 10'd18) &&
-                         (DrawX >= 10'd32) && (DrawX < 10'd48)) begin
+                         (DrawX >= 10'd32) && (DrawX < 10'd52)) begin
                 text_active = 1'b1;
                 text_index = (DrawX - 10'd32) >> 2;
                 text_column = (DrawX - 10'd32) & 2'b11;
@@ -226,7 +230,8 @@ module piano_mapper (
                 case (wave_sel)
                     0: case (text_index) 0: text_character="S"; 1: text_character="I"; 2: text_character="N"; 3: text_character="E"; default: text_character=0; endcase
                     1: case (text_index) 0: text_character="S"; 1: text_character="A"; 2: text_character="W"; 3: text_character=0; default: text_character=0; endcase
-                    default: case (text_index) 0: text_character="S"; 1: text_character="Q"; 2: text_character="R"; 3: text_character=0; default: text_character=0; endcase
+                    2: case (text_index) 0: text_character="S"; 1: text_character="Q"; 2: text_character="R"; 3: text_character=0; default: text_character=0; endcase
+                    default: case (text_index) 0: text_character="P"; 1: text_character="I"; 2: text_character="A"; 3: text_character="N"; 4: text_character="O"; default: text_character=0; endcase
                 endcase
                 {Red, Green, Blue} = 12'h062;
             end else if ((DrawY >= 10'd12) && (DrawY < 10'd18) &&
@@ -270,10 +275,40 @@ module piano_mapper (
                     2: case (text_index) 0: text_character="R"; 1: text_character="E"; 2: text_character="C"; 3: text_character=0; default: text_character=0; endcase
                     default: case (text_index) 0: text_character="L"; 1: text_character="O"; 2: text_character="O"; 3: text_character="P"; default: text_character=0; endcase
                 endcase
+            end else if ((DrawY >= 10'd12) && (DrawY < 10'd18) &&
+                         (DrawX >= 10'd456) && (DrawX < 10'd468)) begin
+                text_active = 1'b1;
+                text_index = (DrawX - 10'd456) >> 2;
+                text_column = (DrawX - 10'd456) & 2'b11;
+                text_row = DrawY - 10'd12;
+                case (text_index)
+                    0: text_character = "S";
+                    1: text_character = "U";
+                    2: text_character = "S";
+                    default: text_character = 0;
+                endcase
+            end else if ((DrawY >= 10'd12) && (DrawY < 10'd18) &&
+                         (DrawX >= 10'd488) && (DrawX < 10'd504)) begin
+                text_active = 1'b1;
+                text_index = (DrawX - 10'd488) >> 2;
+                text_column = (DrawX - 10'd488) & 2'b11;
+                text_row = DrawY - 10'd12;
+                case (text_index)
+                    0: text_character = "E";
+                    1: text_character = "C";
+                    2: text_character = "H";
+                    3: text_character = "O";
+                    default: text_character = 0;
+                endcase
             end
 
             if (text_active && font_pixel(text_character, text_row, text_column)) begin
-                {Red, Green, Blue} = 12'hCDE;
+                if ((DrawX >= 10'd456) && (DrawX < 10'd468))
+                    {Red, Green, Blue} = sustain_pedal ? 12'h4F8 : 12'h536;
+                else if ((DrawX >= 10'd488) && (DrawX < 10'd504))
+                    {Red, Green, Blue} = echo_en ? 12'h4F8 : 12'h536;
+                else
+                    {Red, Green, Blue} = 12'hCDE;
             end
 
             if ((DrawY >= 10'd13) && (DrawY < 10'd20)) begin

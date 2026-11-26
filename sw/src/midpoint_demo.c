@@ -15,7 +15,13 @@
 #include "xtmrctr.h"
 
 #include "midi_engine.h"
-#include "midi_songs.h"
+
+typedef struct {
+    uint32_t delta_ms;
+    uint8_t status;
+    uint8_t data1;
+    uint8_t data2;
+} midi_event_t;
 
 #ifndef XPAR_HDMI_TEXT_CONTROLLER_0_AXI_BASEADDR
 #error "The Vitis platform must define XPAR_HDMI_TEXT_CONTROLLER_0_AXI_BASEADDR."
@@ -57,21 +63,19 @@ static uint32_t loop_next_event_ms;
 static uint8_t loop_recording;
 static uint8_t loop_playing;
 
-static uint8_t song_playing;
-static uint16_t song_event_index;
-static uint32_t song_next_event_ms;
 static uint8_t last_display_status = 0xFFU;
 
 static uint8_t previous_usb_notes[6] = {
     NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE, NO_NOTE
 };
 static uint8_t previous_keycodes[6];
+static uint8_t keyboard_echo_enabled;
+static uint8_t virtual_sustain_enabled;
 static uint8_t previous_octave_down;
 static uint8_t previous_octave_up;
 static uint8_t previous_key_1;
 static uint8_t previous_key_2;
 static uint8_t previous_key_3;
-static uint8_t previous_key_9;
 static uint8_t previous_key_minus;
 static uint8_t previous_key_equal;
 static uint8_t previous_backspace;
@@ -106,8 +110,6 @@ static void update_display_status(unsigned int octave_base)
         mode = 2U;
     else if (loop_playing)
         mode = 3U;
-    else if (song_playing)
-        mode = 1U;
 
     octave_index = (octave_base >= 36U) ?
                    (uint8_t)((octave_base - 36U) / 12U) : 0U;
@@ -231,58 +233,6 @@ static void collect_usb_notes(const BOOT_KBD_REPORT *report,
     }
 }
 
-static void stop_song(void)
-{
-    if (song_playing) {
-        midi_all_notes_off();
-        xil_printf("MIDI song stopped\r\n");
-    }
-    song_playing = 0;
-}
-
-static void start_song(void)
-{
-    song_playing = 1;
-    song_event_index = 0;
-    song_next_event_ms = now_ms();
-    xil_printf("Bach-style MIDI song started\r\n");
-}
-
-static void toggle_song(void)
-{
-    if (song_playing)
-        stop_song();
-    else {
-        start_song();
-    }
-}
-
-static void service_song(void)
-{
-    uint32_t now;
-
-    if (!song_playing)
-        return;
-
-    now = now_ms();
-    if (!time_reached(now, song_next_event_ms))
-        return;
-    if (song_event_index >= BACH_PRELUDE_EVENT_COUNT) {
-        stop_song();
-        return;
-    }
-
-    midi_send_packet(bach_prelude[song_event_index].status,
-                     bach_prelude[song_event_index].data1,
-                     bach_prelude[song_event_index].data2);
-    song_event_index++;
-    if (song_event_index >= BACH_PRELUDE_EVENT_COUNT) {
-        song_next_event_ms = now;
-    } else {
-        song_next_event_ms += bach_prelude[song_event_index].delta_ms;
-    }
-}
-
 static void toggle_loop_recording(void)
 {
     if (loop_recording) {
@@ -373,6 +323,13 @@ static void parse_midi_byte(uint8_t byte)
         if (needed == 1U) {
             if (message == 0xC0U) {
                 midi_engine_use_midi_program();
+                if (midi_data1 == 3U) {
+                    midi_engine_set_adsr_config(MIDI_ADSR_PIANO_CONFIG);
+                    midi_engine_set_echo_enabled(0U);
+                    keyboard_echo_enabled = 0;
+                } else {
+                    midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+                }
                 midi_program_change(midi_data1);
             }
             midi_data_count = 0U;
@@ -449,20 +406,46 @@ static void service_keyboard_controls(const BOOT_KBD_REPORT *report)
         down = key_was_held(keycode);
         if (keycode == 0x1EU && !down) {
             midi_engine_set_waveform(0U);
+            midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+            midi_engine_set_echo_enabled(0U);
+            keyboard_echo_enabled = 0;
             xil_printf("Waveform: Sine\r\n");
         } else if (keycode == 0x1FU && !down) {
             midi_engine_set_waveform(1U);
+            midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+            midi_engine_set_echo_enabled(0U);
+            keyboard_echo_enabled = 0;
             xil_printf("Waveform: Sawtooth\r\n");
         } else if (keycode == 0x20U && !down) {
             midi_engine_set_waveform(2U);
+            midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+            midi_engine_set_echo_enabled(0U);
+            keyboard_echo_enabled = 0;
             xil_printf("Waveform: Square\r\n");
-        } else if (keycode == 0x26U && !down) {
-            toggle_song();
+        } else if (keycode == 0x21U && !down) {
+            midi_engine_set_waveform(3U);
+            midi_engine_set_adsr_config(MIDI_ADSR_PIANO_CONFIG);
+            midi_engine_set_echo_enabled(0U);
+            keyboard_echo_enabled = 0;
+            xil_printf("Waveform: Acoustic Piano\r\n");
+        } else if (keycode == 0x22U && !down) {
+            keyboard_echo_enabled = !keyboard_echo_enabled;
+            midi_engine_set_echo_enabled(keyboard_echo_enabled);
+            xil_printf("Echo: %s\r\n",
+                       keyboard_echo_enabled ? "on" : "off");
+        } else if (keycode == 0x23U && !down) {
+            virtual_sustain_enabled = !virtual_sustain_enabled;
+            midi_send_packet(0xB0U, 64U,
+                             virtual_sustain_enabled ? 127U : 0U);
+            xil_printf("Sustain pedal: %s\r\n",
+                       virtual_sustain_enabled ? "on" : "off");
         } else if (keycode == 0x2DU && !down) {
             toggle_loop_recording();
         } else if (keycode == 0x2EU && !down) {
             toggle_loop_playback();
         } else if (keycode == 0x2AU && !down) {
+            virtual_sustain_enabled = 0;
+            midi_send_packet(0xB0U, 64U, 0U);
             midi_all_notes_off();
             xil_printf("MIDI panic\r\n");
         }
@@ -502,11 +485,14 @@ int midpoint_demo_main(void)
     uint8_t octave_up_now;
 
     midi_engine_init(BASE_ADDR);
-    midi_engine_set_waveform(1U);
-    midi_engine_set_adsr_config(MIDI_ADSR_DEFAULT_CONFIG);
+    midi_engine_set_waveform(3U);
+    midi_engine_set_adsr_config(MIDI_ADSR_PIANO_CONFIG);
+    midi_engine_set_echo_enabled(0U);
+    keyboard_echo_enabled = 0;
+    virtual_sustain_enabled = 0;
     midi_engine_set_display_status(2U, 0U);
     last_display_status = 2U;
-    xil_printf("Waveform: Sawtooth\r\n");
+    xil_printf("Waveform: Acoustic Piano\r\n");
     MAX3421E_init();
     USB_init();
 
@@ -514,7 +500,6 @@ int midpoint_demo_main(void)
         MAX3421E_Task();
         USB_Task();
         service_uart_midi();
-        service_song();
         service_loop();
         update_display_status(octave_base);
 
@@ -565,7 +550,6 @@ int midpoint_demo_main(void)
                 for (i = 0; i < 6U; ++i)
                     previous_keycodes[i] = 0;
                 octave_base = 60U;
-                stop_song();
                 xil_printf("USB error state\r\n");
                 running = 0;
                 device = 0xFF;
@@ -578,7 +562,6 @@ int midpoint_demo_main(void)
             for (i = 0; i < 6U; ++i)
                 previous_keycodes[i] = 0;
             octave_base = 60U;
-            stop_song();
             MAX3421E_init();
             USB_init();
         }

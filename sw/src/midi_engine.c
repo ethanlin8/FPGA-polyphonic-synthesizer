@@ -7,12 +7,15 @@
 #define ADSR_CONFIG_OFFSET 0x30U
 #define DISPLAY_STATUS_OFFSET 0x34U
 #define WAVE_OVERRIDE_ENABLE (1U << 10)
+#define ECHO_ENABLE (1U << 11)
 
 static uint32_t midi_base_addr;
+static uint32_t control_shadow;
 
 void midi_engine_init(uint32_t base_addr)
 {
     midi_base_addr = base_addr;
+    control_shadow = 0;
 }
 
 void midi_send_packet(uint8_t status, uint8_t data1, uint8_t data2)
@@ -52,14 +55,25 @@ void midi_all_notes_off(void)
 
 void midi_engine_set_waveform(uint8_t wave_sel)
 {
-    uint32_t control = WAVE_OVERRIDE_ENABLE |
-                       ((uint32_t)(wave_sel % 3U) << 8);
-    Xil_Out32(midi_base_addr + VOICE_CONTROL_OFFSET, control);
+    control_shadow = (control_shadow & ECHO_ENABLE) |
+                     WAVE_OVERRIDE_ENABLE |
+                     ((uint32_t)(wave_sel & 0x03U) << 8);
+    Xil_Out32(midi_base_addr + VOICE_CONTROL_OFFSET, control_shadow);
+}
+
+void midi_engine_set_echo_enabled(uint8_t enabled)
+{
+    if (enabled)
+        control_shadow |= ECHO_ENABLE;
+    else
+        control_shadow &= ~ECHO_ENABLE;
+    Xil_Out32(midi_base_addr + VOICE_CONTROL_OFFSET, control_shadow);
 }
 
 void midi_engine_use_midi_program(void)
 {
-    Xil_Out32(midi_base_addr + VOICE_CONTROL_OFFSET, 0U);
+    control_shadow &= ~(WAVE_OVERRIDE_ENABLE | 0x00000300U);
+    Xil_Out32(midi_base_addr + VOICE_CONTROL_OFFSET, control_shadow);
 }
 
 void midi_engine_set_adsr_config(uint32_t config)

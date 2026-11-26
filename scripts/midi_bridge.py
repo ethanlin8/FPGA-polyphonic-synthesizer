@@ -69,6 +69,11 @@ def main():
         action="store_true",
         help="Forward General MIDI percussion on channel 10",
     )
+    parser.add_argument(
+        "--allow-program-change",
+        action="store_true",
+        help="Forward program changes from MIDI files",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -86,9 +91,18 @@ def main():
         if args.midi:
             midi = mido.MidiFile(args.midi)
             print("Playing", args.midi)
-            for message in midi.play():
-                if not message.is_meta:
-                    forward_message(uart, message, args.include_drums)
+            try:
+                uart.write(bytes((0xC0, 0x03)))
+                uart.flush()
+                for message in midi.play():
+                    if not message.is_meta:
+                        if (message.type == "program_change" and
+                                not args.allow_program_change):
+                            continue
+                        forward_message(uart, message, args.include_drums)
+            finally:
+                uart.write(bytes((0xB0, 0x40, 0x00, 0xB0, 0x7B, 0x00)))
+                uart.flush()
         else:
             names = mido.get_input_names()
             if not names:

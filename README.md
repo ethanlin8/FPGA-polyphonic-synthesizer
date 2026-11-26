@@ -14,11 +14,13 @@ The current implementation is an eight-voice hardware MIDI synthesizer with an 8
 - Hardware MIDI event FIFO with 64 entries.
 - Hardware tuning and key highlighting cover MIDI `21..108` (A0-C8); out-of-range MIDI notes are octave-folded into that range.
 - Idle/release/active voice allocation and oldest-active voice stealing across all eight voices.
-- Pitched sine, sawtooth, and square waveforms with hardware velocity scaling and ADSR envelopes.
+- Sine, sawtooth, square, and multi-harmonic acoustic piano waveforms with hardware velocity scaling and ADSR envelopes. Piano partials are processed over a four-cycle registered path.
+- The eight-voice mixer applies quarter-scale gain plus additional attenuation for dense chords; the sigma-delta input is bounded to 75% of full scale.
+- MIDI CC 64 sustain pedal with 3x natural damper bleed, silent-voice reclamation, a 1.1-second maximum hold, and damper-aware voice stealing; 4096-sample 16-bit echo buffer (about 335 ms at its decimated rate; two BRAM36 tiles).
 - HDMI highlighting derived directly from the eight active hardware voice gates.
 - USB boot-keyboard support with six simultaneous HID key slots.
-- HDMI oscilloscope trace, waveform and polyphony indicators, ADSR bars, and firmware octave/song/looper status HUD.
-- USB piano controls, octave shifting from C2 to C7, waveform controls, one built-in song, live looper, and UART MIDI input.
+- HDMI oscilloscope trace, waveform and polyphony indicators, ADSR bars, and firmware octave/looper status HUD.
+- USB piano controls, octave shifting from C2 to C7, waveform controls, live looper, and UART MIDI input.
 - A PC-side Python MIDI bridge for USB MIDI controllers and MIDI files.
 - Mono synth audio is duplicated to `audio_l` and `audio_r` on `B13`/`B14`.
 
@@ -28,8 +30,10 @@ The current implementation is an eight-voice hardware MIDI synthesizer with an 8
 |---|---|
 | `A` through `'` | Piano notes in the selected octave |
 | `[` / `]` | Shift the USB piano octave down/up |
-| `1` / `2` / `3` | Select sine / sawtooth / square |
-| `9` | Toggle the Bach-style built-in arrangement |
+| `1` / `2` / `3` | Select sine / sawtooth / square and restore the standard ADSR profile |
+| `4` | Select the acoustic piano preset (smooth ADSR; echo off by default) |
+| `5` | Toggle echo |
+| `6` | Toggle the virtual sustain pedal (MIDI CC 64) |
 | `-` | Start/stop live MIDI event recording |
 | `=` | Toggle loop playback |
 | `Backspace` | Panic: silence all voices |
@@ -42,24 +46,26 @@ The USB keyboard starts at octave C4 (`MIDI 60`). HID `ErrorRollOver`/`POSTFail`
 |---|---|---|
 | `0x00` | `slv_reg0` | Software active-key mask bits `31..0` |
 | `0x04` | `slv_reg1` | Software active-key mask bits `63..32` |
-| `0x28` | `slv_reg10` | Waveform selection and software override enable |
+| `0x28` | `slv_reg10` | Waveform `[9:8]`, software override `[10]`, echo enable `[11]` |
 | `0x2C` | `slv_reg11` | Packed MIDI packet `{status, data1, data2}` |
-| `0x30` | `slv_reg12` | ADSR configuration `{release, sustain, decay, attack}` |
+| `0x30` | `slv_reg12` | ADSR `{release_10ms, sustain, decay_10ms, attack_ms}` |
 | `0x34` | `slv_reg13` | Firmware HUD state: mode `[4:3]`, octave index `[2:0]` |
 
 The hardware engine combines its own gated voice mask with the software mask for the HDMI piano display.
 
 ### Validation Status
 
-- Vivado 2022.2 full hardware implementation completed; routed setup WNS is **+0.648 ns** and hold WHS is **+0.032 ns**. The 25 MHz pixel-clock setup WNS is **+28.261 ns**.
-- Standalone XSim smoke tests passed for MIDI A0/C8 mapping, out-of-range octave folding, key highlighting, and scope-trace rendering.
-- The integrated IP testbench could not be elaborated because the local XSim setup lacks the `blk_mem_gen_v8_4_5` simulation model.
-- The MicroBlaze `synth_app.elf` rebuilt successfully with the updated firmware.
-- These results are from the current local sources; board-level audio and display behavior still requires hardware testing.
+- Fresh Vivado 2022.2 standalone OOC synthesis reports setup WNS **+0.219 ns** with a 10 ns `axi_aclk` constraint. Vivado notes that `HD.CLK_SRC` is unset, so OOC clock insertion delay/skew is not estimated. The last full-system routed result, before these sustain-timeout changes, reported setup WNS **+0.131 ns** and hold WHS **+0.025 ns**. The `4096 x 16` echo buffer maps to two RAMB36 blocks.
+- The integrated testbench compiles and elaborates with Piano harmonic-thinning, 3x damper-bleed, foreground-melody, and 1,100-tick timeout checks. The full XSim run did not complete locally and was stopped after an extended run; these runtime checks remain unverified.
+- The MicroBlaze `synth_app.elf` was rebuilt from the current firmware sources (292,068 bytes) using the generated MicroBlaze compile/link flags.
+- Standalone XSim smoke tests previously passed MIDI A0/C8 mapping, out-of-range octave folding, key highlighting, and scope-trace rendering. Board-level audio and display behavior still requires hardware testing.
 
 ### MIDI UART Bridge
 
 Install the PC-side dependencies and run `midi_bridge.py`:
+
+MIDI-file playback selects Acoustic Piano before the first event and ignores file
+program changes by default; pass `--allow-program-change` to forward them.
 
 ```bash
 pip install mido pyserial
@@ -69,6 +75,7 @@ python scripts/midi_bridge.py --port COM8 --midi song.mid
 ```
 
 The bridge forwards raw MIDI data at `115200` baud. It skips General MIDI Channel 10 percussion unless `--include-drums` is supplied and octave-folds Note On/Note Off messages into `21..108`.
+MIDI-file playback sends sustain-off and all-notes-off messages on completion or interruption.
 
 ---
 

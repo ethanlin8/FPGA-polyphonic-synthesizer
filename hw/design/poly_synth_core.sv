@@ -3,10 +3,12 @@ module poly_synth_core (
     input  logic         Reset,
     input  logic [255:0] tuning_words,
     input  logic [7:0]   voice_gate,
+    input  logic [7:0]   voice_sustained,
     input  logic [55:0]  velocity_words,
     input  logic         voice_clear,
     input  logic [31:0]  adsr_config,
     input  logic [1:0]   wave_sel,
+    input logic         echo_en,
     output logic [7:0]   voice_idle,
     output logic [7:0]   scope_sample,
     output logic         scope_sample_tick,
@@ -17,6 +19,16 @@ module poly_synth_core (
     logic signed [15:0] sine_rom [0:255];
     logic signed [15:0] voice_wave [0:7];
     logic signed [15:0] voice_sample_reg [0:7];
+    logic signed [17:0] piano_wave_sum [0:7];
+    logic signed [15:0] piano_wave_sample [0:7];
+    logic [31:0] piano_phase_latch [0:7];
+    logic [7:0] piano_sustained_latch;
+    logic signed [15:0] piano_fundamental_reg [0:7];
+    logic signed [15:0] piano_harmonic2_sample [0:7];
+    logic signed [15:0] piano_harmonic3_sample [0:7];
+    logic signed [17:0] piano_partial_sum [0:7];
+    logic [1:0] piano_calc_stage [0:7];
+    logic [7:0] piano_calc_active;
     logic [6:0] voice_velocity_reg [0:7];
     logic [15:0] envelope_sample_reg [0:7];
     logic [15:0] envelope_level [0:7];
@@ -37,6 +49,8 @@ module poly_synth_core (
     logic [17:0] step_div_remainder_next [0:7];
     logic [16:0] envelope_fraction_add [0:7];
     logic [16:0] envelope_fraction_sub [0:7];
+    logic [31:0] sustain_bleed_step [0:7];
+    logic [16:0] sustain_bleed_fraction_sub [0:7];
     logic [7:0] prev_gate;
     logic [7:0] voice_running;
     logic envelope_sample_tick;
@@ -48,9 +62,33 @@ module poly_synth_core (
     logic signed [25:0] quad_sum [0:1];
     logic signed [25:0] quad_sum_next [0:1];
     logic signed [26:0] mix_sum_next;
+    logic signed [24:0] mix_scaled_next;
+    logic signed [24:0] mix_scaled_reg;
+    logic signed [24:0] mix_limited_next;
     logic signed [19:0] clipped_next;
     logic signed [19:0] clipped_sample;
     logic signed [15:0] dac_sample;
+    logic signed [15:0] audio_sample;
+    logic signed [15:0] audio_sample_reg;
+    (* ram_style = "block" *) logic signed [15:0] echo_ram [0:4095];
+    logic [11:0] echo_ptr;
+    logic [11:0] echo_clear_ptr;
+    logic [11:0] echo_pending_addr;
+    logic [1:0] echo_decimator;
+    logic echo_pending;
+    logic echo_write_pending;
+    logic echo_clear_busy;
+    logic echo_ready;
+    logic echo_prev_en;
+    logic signed [15:0] echo_read_data;
+    logic signed [15:0] echo_pending_mixed;
+    logic signed [17:0] echo_feedback_sum;
+    logic signed [17:0] echo_wet_sum;
+    logic signed [15:0] echo_feedback_term;
+    logic signed [15:0] echo_wet_term;
+    logic signed [15:0] echo_feedback_sample;
+    logic signed [15:0] echo_feedback_reg;
+    logic signed [15:0] echo_wet_sample;
     logic [15:0] x_unsigned;
     logic [15:0] x_clamped;
     logic [15:0] x_clamped_next;
@@ -90,6 +128,67 @@ module poly_synth_core (
             duration_to_samples = scaled_duration[21:5];
             if (duration_to_samples == 0)
                 duration_to_samples = 17'd1;
+        end
+    endfunction
+
+    function automatic logic [31:0] triple_step_saturated(
+        input logic [31:0] step
+    );
+        logic [33:0] tripled;
+        begin
+            tripled = ({2'b00, step} << 1) + {2'b00, step};
+            triple_step_saturated = (|tripled[33:32]) ?
+                                    32'hFFFFFFFF : tripled[31:0];
+        end
+    endfunction
+
+    function automatic logic [16:0] attack_to_samples(input logic [7:0] duration_ms);
+        logic [15:0] scaled_duration;
+        begin
+            scaled_duration = ({8'd0, duration_ms} << 5) +
+                              ({8'd0, duration_ms} << 4) +
+                              {8'd0, duration_ms};
+            attack_to_samples = {1'b0, scaled_duration};
+            if (attack_to_samples == 0)
+                attack_to_samples = 17'd1;
+        end
+    endfunction
+
+    function automatic logic signed [15:0] saturate_16(input logic signed [17:0] value);
+        begin
+            if (value > 18'sd32767)
+                saturate_16 = 16'sh7FFF;
+            else if (value < -18'sd32768)
+                saturate_16 = 16'sh8000;
+            else
+                saturate_16 = value[15:0];
+        end
+    endfunction
+
+    function automatic logic signed [15:0] echo_feedback_attenuate(
+        input logic signed [15:0] value
+    );
+        logic signed [16:0] magnitude;
+        begin
+            if (value > -16'sd16 && value < 16'sd16)
+                echo_feedback_attenuate = 16'sd0;
+            else if (value >= 0)
+                echo_feedback_attenuate = value >>> 2;
+            else begin
+                magnitude = -$signed({value[15], value});
+                echo_feedback_attenuate = -$signed(magnitude >>> 2);
+            end
+        end
+    endfunction
+
+    function automatic logic signed [15:0] echo_wet_attenuate(
+        input logic signed [15:0] value
+    );
+        begin
+            if (value > -16'sd16 && value < 16'sd16)
+                echo_wet_attenuate = 16'sd0;
+            else
+                echo_wet_attenuate = value >>> 1;
         end
     endfunction
 
@@ -358,7 +457,7 @@ module poly_synth_core (
         sustain_level = adsr_config[23:16];
         release_units = (adsr_config[31:24] == 0) ? 8'd1 : adsr_config[31:24];
         sustain_target = {sustain_level, sustain_level};
-        attack_samples_next = duration_to_samples(attack_units);
+        attack_samples_next = attack_to_samples(attack_units);
         decay_samples_next = duration_to_samples(decay_units);
         release_samples_next = duration_to_samples(release_units);
         envelope_sample_tick = (envelope_clock_divider == 11'd2047);
@@ -366,12 +465,28 @@ module poly_synth_core (
         for (int voice = 0; voice < 8; voice++) begin
             voice_running[voice] = voice_gate[voice] ||
                                    (envelope_state[voice] != ENV_IDLE);
+            if (piano_sustained_latch[voice]) begin
+                piano_harmonic2_sample[voice] =
+                    $signed(sine_rom[piano_phase_latch[voice][30:23]]) >>> 3;
+                piano_harmonic3_sample[voice] =
+                    $signed(sine_rom[piano_phase_latch[voice][31:24] +
+                                     piano_phase_latch[voice][30:23]]) >>> 4;
+            end else begin
+                piano_harmonic2_sample[voice] =
+                    $signed(sine_rom[piano_phase_latch[voice][30:23]]) >>> 2;
+                piano_harmonic3_sample[voice] =
+                    $signed(sine_rom[piano_phase_latch[voice][31:24] +
+                                     piano_phase_latch[voice][30:23]]) >>> 3;
+            end
             envelope_fraction_add[voice] =
                 {1'b0, envelope_fraction[voice]} +
                 {1'b0, envelope_step_q16[voice][15:0]};
             envelope_fraction_sub[voice] =
                 {1'b0, envelope_fraction[voice]} -
                 {1'b0, envelope_step_q16[voice][15:0]};
+            sustain_bleed_fraction_sub[voice] =
+                {1'b0, envelope_fraction[voice]} -
+                {1'b0, sustain_bleed_step[voice][15:0]};
             step_div_remainder_next[voice] =
                 {step_div_remainder[voice][16:0], step_dividend[voice][31]};
             step_div_quotient_next[voice] =
@@ -381,14 +496,19 @@ module poly_synth_core (
                     step_div_remainder_next[voice] - {1'b0, step_divisor[voice]};
                 step_div_quotient_next[voice][0] = 1'b1;
             end
-            voice_idle[voice] = (envelope_state[voice] == ENV_IDLE);
+            voice_idle[voice] =
+                (envelope_state[voice] == ENV_IDLE) ||
+                ((envelope_state[voice] != ENV_ATTACK) &&
+                 (envelope_level[voice] == 16'd0));
             voice_wave[voice] = 16'sd0;
+            piano_wave_sum[voice] = piano_partial_sum[voice];
             if (voice_running[voice]) begin
                 case (wave_sel)
                     2'b00: voice_wave[voice] = sine_rom[phase_acc[voice][31:24]];
                     2'b01: voice_wave[voice] = $signed(phase_acc[voice][31:16]);
                     2'b10: voice_wave[voice] =
                                phase_acc[voice][31] ? 16'sh7FFF : 16'sh8000;
+                    2'b11: voice_wave[voice] = piano_wave_sample[voice];
                     default: voice_wave[voice] = sine_rom[phase_acc[voice][31:24]];
                 endcase
             end
@@ -415,12 +535,22 @@ module poly_synth_core (
             $signed({quad_sum[0][25], quad_sum[0]}) +
             $signed({quad_sum[1][25], quad_sum[1]});
 
-        if (mix_sum_next > 27'sd524287)
+        mix_scaled_next = mix_sum_next >>> 2;
+        if (mix_scaled_reg > 25'sd49150 ||
+            mix_scaled_reg < -25'sd49150)
+            mix_limited_next = mix_scaled_reg >>> 2;
+        else if (mix_scaled_reg > 25'sd24575 ||
+                 mix_scaled_reg < -25'sd24576)
+            mix_limited_next = mix_scaled_reg >>> 1;
+        else
+            mix_limited_next = mix_scaled_reg;
+
+        if (mix_limited_next > 25'sd524287)
             clipped_next = 20'sh7FFFF;
-        else if (mix_sum_next < -27'sd524288)
+        else if (mix_limited_next < -25'sd524288)
             clipped_next = 20'sh80000;
         else
-            clipped_next = mix_sum_next[19:0];
+            clipped_next = mix_limited_next[19:0];
 
         if (clipped_sample > 20'sd32767)
             dac_sample = 16'sh7FFF;
@@ -428,11 +558,22 @@ module poly_synth_core (
             dac_sample = 16'sh8000;
         else
             dac_sample = clipped_sample[15:0];
-        x_unsigned = $unsigned(dac_sample) ^ 16'h8000;
-        if (x_unsigned < 16'd2048)
-            x_clamped_next = 16'd2048;
-        else if (x_unsigned > 16'd63487)
-            x_clamped_next = 16'd63487;
+        echo_feedback_term = echo_feedback_attenuate(echo_read_data);
+        echo_wet_term = echo_wet_attenuate(echo_read_data);
+        echo_feedback_sum = $signed({{2{echo_pending_mixed[15]}},
+                                     echo_pending_mixed}) +
+                            $signed({{2{echo_feedback_term[15]}},
+                                     echo_feedback_term});
+        echo_wet_sum = $signed({{2{dac_sample[15]}}, dac_sample}) +
+                       $signed({{2{echo_wet_term[15]}}, echo_wet_term});
+        echo_feedback_sample = saturate_16(echo_feedback_sum);
+        echo_wet_sample = saturate_16(echo_wet_sum);
+        audio_sample = (echo_en && echo_ready) ? echo_wet_sample : dac_sample;
+        x_unsigned = $unsigned(audio_sample_reg) ^ 16'h8000;
+        if (x_unsigned < 16'd8192)
+            x_clamped_next = 16'd8192;
+        else if (x_unsigned > 16'd57343)
+            x_clamped_next = 16'd57343;
         else
             x_clamped_next = x_unsigned;
 
@@ -456,18 +597,26 @@ module poly_synth_core (
             err = err_wide[17:0];
     end
 
-    always_comb begin
-        scope_sample = dac_sample[15:8] ^ 8'h80;
-        scope_sample_tick = envelope_sample_tick;
+    always_ff @(posedge Clk) begin
+        if (Reset) begin
+            scope_sample <= 8'h80;
+            scope_sample_tick <= 1'b0;
+        end else begin
+            scope_sample_tick <= envelope_sample_tick;
+            if (envelope_sample_tick)
+                scope_sample <= audio_sample[15:8] ^ 8'h80;
+        end
     end
 
     always_ff @(posedge Clk) begin
         if (Reset) begin
             envelope_clock_divider <= 0;
             prev_gate <= 0;
-            attack_samples <= 17'd1953;
+            piano_calc_active <= 0;
+            attack_samples <= 17'd195;
             decay_samples <= 17'd8790;
             release_samples <= 17'd19531;
+            piano_sustained_latch <= 0;
             for (int voice = 0; voice < 8; voice++) begin
                 phase_acc[voice] <= 0;
                 envelope_state[voice] <= ENV_IDLE;
@@ -475,6 +624,8 @@ module poly_synth_core (
                 envelope_fraction[voice] <= 0;
                 envelope_elapsed[voice] <= 0;
                 envelope_step_q16[voice] <= 0;
+                sustain_bleed_step[voice] <=
+                    triple_step_saturated(32'h00008000);
                 step_dividend[voice] <= 0;
                 step_div_quotient[voice] <= 0;
                 step_divisor[voice] <= 0;
@@ -482,6 +633,11 @@ module poly_synth_core (
                 step_div_remaining[voice] <= 0;
                 step_div_active[voice] <= 0;
                 voice_sample_reg[voice] <= 0;
+                piano_wave_sample[voice] <= 0;
+                piano_phase_latch[voice] <= 0;
+                piano_fundamental_reg[voice] <= 0;
+                piano_partial_sum[voice] <= 0;
+                piano_calc_stage[voice] <= 0;
                 voice_velocity_reg[voice] <= 0;
                 envelope_sample_reg[voice] <= 0;
                 voice_velocity_product[voice] <= 0;
@@ -501,8 +657,46 @@ module poly_synth_core (
             attack_samples <= attack_samples_next;
             decay_samples <= decay_samples_next;
             release_samples <= release_samples_next;
+            for (int voice = 0; voice < 8; voice++)
+                sustain_bleed_step[voice] <= triple_step_saturated(
+                    (envelope_step_q16[voice] == 0) ?
+                    32'h00008000 : envelope_step_q16[voice]);
 
             for (int voice = 0; voice < 8; voice++) begin
+                if (piano_calc_active[voice]) begin
+                    case (piano_calc_stage[voice])
+                        2'd0: begin
+                            piano_fundamental_reg[voice] <=
+                                sine_rom[piano_phase_latch[voice][31:24]];
+                            piano_calc_stage[voice] <= 2'd1;
+                        end
+                        2'd1: begin
+                            piano_partial_sum[voice] <=
+                                $signed(piano_fundamental_reg[voice]) +
+                                piano_harmonic2_sample[voice];
+                            piano_calc_stage[voice] <= 2'd2;
+                        end
+                        2'd2: begin
+                            piano_partial_sum[voice] <=
+                                piano_partial_sum[voice] +
+                                piano_harmonic3_sample[voice];
+                            piano_calc_stage[voice] <= 2'd3;
+                        end
+                        default: begin
+                            piano_wave_sample[voice] <=
+                                saturate_16(piano_wave_sum[voice] >>> 1);
+                            piano_calc_active[voice] <= 1'b0;
+                        end
+                    endcase
+                end
+
+                if (envelope_sample_tick) begin
+                    piano_phase_latch[voice] <= phase_acc[voice];
+                    piano_sustained_latch[voice] <= voice_sustained[voice];
+                    piano_calc_stage[voice] <= 0;
+                    piano_calc_active[voice] <= 1'b1;
+                end
+
                 if (voice_running[voice])
                     phase_acc[voice] <=
                         phase_acc[voice] + tuning_words[voice*32 +: 32];
@@ -538,6 +732,9 @@ module poly_synth_core (
                 voice_scaled[voice] <= voice_scaled_next[voice];
 
                 if (voice_clear) begin
+                    piano_calc_active[voice] <= 0;
+                    piano_wave_sample[voice] <= 0;
+                    piano_partial_sum[voice] <= 0;
                     envelope_state[voice] <= ENV_IDLE;
                     envelope_level[voice] <= 0;
                     envelope_fraction[voice] <= 0;
@@ -623,9 +820,26 @@ module poly_synth_core (
                             end
                         end
                         ENV_SUSTAIN: begin
-                            envelope_level[voice] <= sustain_target;
-                            envelope_fraction[voice] <= 0;
-                            envelope_elapsed[voice] <= 0;
+                            if (voice_sustained[voice]) begin
+                                if ({1'b0, envelope_level[voice]} <=
+                                    ({1'b0, sustain_bleed_step[voice][31:16]} +
+                                     sustain_bleed_fraction_sub[voice][16])) begin
+                                    envelope_level[voice] <= 0;
+                                    envelope_fraction[voice] <= 0;
+                                end else begin
+                                    envelope_level[voice] <=
+                                        envelope_level[voice] -
+                                        sustain_bleed_step[voice][31:16] -
+                                        sustain_bleed_fraction_sub[voice][16];
+                                    envelope_fraction[voice] <=
+                                        sustain_bleed_fraction_sub[voice][15:0];
+                                end
+                                envelope_elapsed[voice] <= 0;
+                            end else begin
+                                envelope_level[voice] <= sustain_target;
+                                envelope_fraction[voice] <= 0;
+                                envelope_elapsed[voice] <= 0;
+                            end
                         end
                         ENV_RELEASE: begin
                             if ((envelope_elapsed[voice] + 1'b1) >= release_samples) begin
@@ -665,10 +879,70 @@ module poly_synth_core (
     always_ff @(posedge Clk) begin
         if (Reset) begin
             clipped_sample <= 20'sd0;
+            mix_scaled_reg <= 0;
+            audio_sample_reg <= 0;
             x_clamped <= 16'd32768;
         end else begin
             clipped_sample <= clipped_next;
+            mix_scaled_reg <= mix_scaled_next;
+            audio_sample_reg <= audio_sample;
             x_clamped <= x_clamped_next;
+        end
+    end
+
+    always_ff @(posedge Clk) begin
+        if (Reset) begin
+            echo_ptr <= 0;
+            echo_clear_ptr <= 0;
+            echo_pending_addr <= 0;
+            echo_decimator <= 0;
+            echo_pending <= 0;
+            echo_write_pending <= 0;
+            echo_feedback_reg <= 0;
+            echo_clear_busy <= 1;
+            echo_ready <= 0;
+            echo_prev_en <= 0;
+            echo_read_data <= 0;
+            echo_pending_mixed <= 0;
+        end else begin
+            echo_prev_en <= echo_en;
+            echo_pending <= 0;
+            echo_write_pending <= echo_pending;
+            if (echo_pending)
+                echo_feedback_reg <= echo_feedback_sample;
+
+            if (echo_prev_en && !echo_en) begin
+                echo_ptr <= 0;
+                echo_decimator <= 0;
+                echo_clear_ptr <= 0;
+                echo_clear_busy <= 1;
+                echo_ready <= 0;
+            end
+
+            if (echo_clear_busy) begin
+                if (echo_clear_ptr == 12'hFFF) begin
+                    echo_clear_busy <= 0;
+                    echo_ready <= 1;
+                end else begin
+                    echo_clear_ptr <= echo_clear_ptr + 1'b1;
+                end
+            end else if (echo_en && echo_ready && envelope_sample_tick) begin
+                if (echo_decimator == 2'd3) begin
+                    echo_decimator <= 0;
+                    echo_read_data <= echo_ram[echo_ptr];
+                    echo_pending_mixed <= dac_sample;
+                    echo_pending_addr <= echo_ptr;
+                    echo_pending <= 1;
+                    echo_ptr <= echo_ptr + 1'b1;
+                end else begin
+                    echo_decimator <= echo_decimator + 1'b1;
+                end
+            end
+
+            if (echo_clear_busy)
+                echo_ram[echo_clear_ptr] <= 16'sd0;
+            else if (echo_write_pending)
+                echo_ram[echo_pending_addr] <= echo_feedback_reg;
         end
     end
 
